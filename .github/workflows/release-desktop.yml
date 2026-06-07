@@ -32,10 +32,6 @@ jobs:
             os: ubuntu-22.04
             rust-targets: x86_64-unknown-linux-gnu
             args: --target x86_64-unknown-linux-gnu
-          - label: linux-arm64
-            os: ubuntu-22.04-arm
-            rust-targets: aarch64-unknown-linux-gnu
-            args: --target aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -75,7 +71,8 @@ jobs:
           mix deps.get --only prod
           mix compile
           mix release symphony_elixir --overwrite
-      - name: Stage backend release for Tauri bundle
+      - name: Stage backend release for Tauri bundle (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euxo pipefail
@@ -84,12 +81,21 @@ jobs:
           cp -a symphony_elixir/_build/prod/rel/symphony_elixir src-tauri/resources/symphony_backend
           test -d src-tauri/resources/symphony_backend/bin
           test -d src-tauri/resources/symphony_backend/releases
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            test -f src-tauri/resources/symphony_backend/bin/symphony_elixir.bat
-          else
-            test -x src-tauri/resources/symphony_backend/bin/symphony_elixir
-          fi
-      - name: Smoke-test staged backend release
+          test -x src-tauri/resources/symphony_backend/bin/symphony_elixir
+          find src-tauri/resources/symphony_backend -maxdepth 3 -type f | sort | head -100
+      - name: Stage backend release for Tauri bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Test-Path src-tauri/resources/symphony_backend) { Remove-Item -Recurse -Force src-tauri/resources/symphony_backend }
+          New-Item -ItemType Directory -Force -Path src-tauri/resources | Out-Null
+          Copy-Item -Recurse -Force symphony_elixir/_build/prod/rel/symphony_elixir src-tauri/resources/symphony_backend
+          Get-ChildItem -Recurse src-tauri/resources/symphony_backend/bin | Format-Table FullName
+          if (!(Test-Path src-tauri/resources/symphony_backend/bin/symphony_elixir.bat)) {
+            throw "Windows backend release script missing: src-tauri/resources/symphony_backend/bin/symphony_elixir.bat"
+          }
+      - name: Smoke-test staged backend release (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         env:
           SYMPHONY_HTTP_PORT: '4104'
@@ -98,21 +104,34 @@ jobs:
         run: |
           set -euxo pipefail
           cd src-tauri/resources/symphony_backend
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            ./bin/symphony_elixir.bat start
-          else
-            ./bin/symphony_elixir start
-          fi
+          ./bin/symphony_elixir daemon
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:4104/healthz; then break; fi
             sleep 1
           done
           curl -fsS http://127.0.0.1:4104/healthz
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            ./bin/symphony_elixir.bat stop || true
-          else
-            ./bin/symphony_elixir stop || true
-          fi
+          ./bin/symphony_elixir stop || true
+      - name: Smoke-test staged backend release (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SYMPHONY_HTTP_PORT: '4104'
+          SYMPHONY_HTTP_HOST: '127.0.0.1'
+          SYMPHONY_HTTP_ENABLED: 'true'
+        run: |
+          Push-Location src-tauri/resources/symphony_backend
+          Start-Process -FilePath .\bin\symphony_elixir.bat -ArgumentList 'start' -NoNewWindow
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            try {
+              Invoke-WebRequest -UseBasicParsing -Uri http://127.0.0.1:4104/healthz -TimeoutSec 2 | Out-Null
+              $ok = $true
+              break
+            } catch { Start-Sleep -Seconds 1 }
+          }
+          if (!$ok) { throw "Backend health check failed" }
+          .\bin\symphony_elixir.bat stop
+          Pop-Location
       - name: Regenerate macOS app icon
         if: runner.os == 'macOS'
         run: |
