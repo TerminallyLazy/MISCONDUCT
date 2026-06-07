@@ -10,8 +10,8 @@ https://github.com/TerminallyLazy/misconducting/releases/latest
 
 Current locally built release assets are Linux ARM64:
 
-- `Symphony Console_0.1.1_aarch64.AppImage`
-- `Symphony Console_0.1.1_arm64.deb`
+- `Symphony Console_0.1.2_aarch64.AppImage`
+- `Symphony Console_0.1.2_arm64.deb`
 
 The GitHub Actions workflow `.github/workflows/release-desktop.yml` is configured to build macOS, Windows, Linux x86_64, and Linux ARM64 packages from release tags.
 
