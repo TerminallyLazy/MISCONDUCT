@@ -54,4 +54,21 @@ defmodule Symphony.AgentProfileRegistryTest do
     assert {:error, {:conflict, _}} =
              AgentProfileRegistry.create(%{"name" => "piano reviewer"}, server)
   end
+
+  test "blank id is treated as generated id and persists", %{server: server, config: config} do
+    assert {:ok, profile} =
+             AgentProfileRegistry.create(%{"id" => "", "name" => "Cello Builder"}, server)
+
+    assert profile["id"] == "cello-builder"
+    assert {:ok, meta} = AgentProfileRegistry.metadata(server)
+    assert meta.count == 1
+    assert meta.exists
+    assert meta.writable
+    assert File.exists?(meta.path)
+
+    name2 = Module.concat(__MODULE__, BlankReloadedRegistry)
+    {:ok, reloaded} = AgentProfileRegistry.start_link(name: name2, config: config)
+    assert {:ok, persisted} = AgentProfileRegistry.get("cello-builder", reloaded)
+    assert persisted["name"] == "Cello Builder"
+  end
 end

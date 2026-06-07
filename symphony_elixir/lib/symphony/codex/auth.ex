@@ -165,29 +165,102 @@ defmodule Symphony.Codex.Auth do
   end
 
   defp version(exe) do
-    case run_cli(exe, ["--version"], @default_timeout) do
-      {0, out} -> out |> redact() |> String.trim()
-      {_code, out} -> out |> redact() |> String.trim()
-    end
+    [["--version"], ["version"], ["-V"]]
+    |> Enum.reduce_while(nil, fn args, _acc ->
+      case run_cli(exe, args, @default_timeout) do
+        {0, out} ->
+          text = out |> redact() |> String.trim()
+          if text == "", do: {:cont, nil}, else: {:halt, text}
+
+        {_code, out} ->
+          text = out |> redact() |> String.trim()
+
+          if String.contains?(String.downcase(text), "codex"),
+            do: {:halt, text},
+            else: {:cont, nil}
+      end
+    end) || "installed"
   end
 
   defp auth_probe(exe) do
-    probes = [["auth", "status"], ["status"], ["whoami"]]
-
-    Enum.reduce_while(probes, nil, fn args, _acc ->
-      case run_cli(exe, args, @default_timeout) do
-        {0, out} -> {:halt, classify_auth(out)}
-        {_code, _out} -> {:cont, nil}
-      end
-    end) ||
+    cli_probe(exe) || file_probe() ||
       %{
         connected: false,
         state: "unknown",
         account_label: nil,
         message:
-          "Codex CLI is installed, but no supported auth status command was detected. Use Sign in or run `codex login`, then test agent spawning."
+          "Codex CLI is installed, but Symphony could not verify the CLI session. If you already signed in, click Check connection after restarting the app; otherwise run `codex login`."
       }
   end
+
+  defp cli_probe(exe) do
+    probes = [["auth", "status"], ["login", "status"], ["status"], ["whoami"], ["account"]]
+
+    Enum.reduce_while(probes, nil, fn args, _acc ->
+      case run_cli(exe, args, @default_timeout) do
+        {0, out} ->
+          auth = classify_auth(out)
+          if auth.connected, do: {:halt, auth}, else: {:cont, nil}
+
+        {_code, out} ->
+          auth = classify_auth(out)
+          if auth.connected, do: {:halt, auth}, else: {:cont, nil}
+      end
+    end)
+  end
+
+  defp file_probe do
+    auth_files()
+    |> Enum.find_value(fn path ->
+      case File.read(path) do
+        {:ok, body} -> classify_auth_file(path, body)
+        _ -> nil
+      end
+    end)
+  end
+
+  defp auth_files do
+    home = System.user_home!()
+
+    [
+      Path.join([home, ".codex", "auth.json"]),
+      Path.join([home, ".codex", "credentials.json"]),
+      Path.join([home, ".codex", "codex.json"]),
+      Path.join([home, ".config", "codex", "auth.json"]),
+      Path.join([home, ".config", "codex", "credentials.json"]),
+      Path.join([home, "Library", "Application Support", "codex", "auth.json"]),
+      Path.join([home, "Library", "Application Support", "Codex", "auth.json"])
+    ]
+  rescue
+    _ -> []
+  end
+
+  defp classify_auth_file(path, body) when is_binary(body) do
+    down = String.downcase(body)
+
+    tokenish =
+      String.contains?(down, "access_token") or String.contains?(down, "refresh_token") or
+        String.contains?(down, "id_token") or String.contains?(down, "account") or
+        String.contains?(down, "chatgpt") or String.contains?(down, "openai")
+
+    revoked =
+      String.contains?(down, "revoked") or String.contains?(down, "invalidated") or
+        String.contains?(down, "expired")
+
+    if tokenish and not revoked do
+      %{
+        connected: true,
+        state: "authenticated",
+        account_label: extract_account(body),
+        message:
+          "Codex CLI session file detected at #{redact_path(path)}. Tokens remain owned by Codex CLI and are not exposed to Symphony."
+      }
+    else
+      nil
+    end
+  end
+
+  defp classify_auth_file(_path, _body), do: nil
 
   defp classify_auth(out) do
     redacted = redact(out)
@@ -195,7 +268,9 @@ defmodule Symphony.Codex.Auth do
 
     connected =
       String.contains?(down, "logged in") or String.contains?(down, "authenticated") or
-        String.contains?(down, "signed in")
+        String.contains?(down, "signed in") or String.contains?(down, "already logged in") or
+        String.contains?(down, "login successful") or String.contains?(down, "subscription") or
+        (String.contains?(down, "chatgpt") and not String.contains?(down, "not logged in"))
 
     %{
       connected: connected,
@@ -203,6 +278,13 @@ defmodule Symphony.Codex.Auth do
       account_label: extract_account(redacted),
       message: String.trim(redacted)
     }
+  end
+
+  defp redact_path(path) do
+    home = System.user_home!()
+    path |> to_string() |> String.replace(home, "~")
+  rescue
+    _ -> to_string(path)
   end
 
   defp extract_account(text) do

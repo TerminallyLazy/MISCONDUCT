@@ -184,4 +184,34 @@ defmodule Symphony.Http.RouterTest do
 
     assert conn.status == 422
   end
+
+  test "workflow judge flags missing judge and refiner metadata" do
+    content = """
+    ---
+    name: weak-workflow
+    tracker:
+      kind: linear
+      api_key: $LINEAR_API_KEY
+      project_slug: TEST
+    workspace:
+      root: ./tmp-router-workflow
+    server:
+      port: 4004
+    ---
+    Handle the issue.
+    """
+
+    conn =
+      conn(:post, "/api/workflows/validate", Jason.encode!(%{content: content}))
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+    warnings = body["warnings"] || []
+    assert Enum.any?(warnings, &String.contains?(&1, "missing judge metadata"))
+    assert Enum.any?(warnings, &String.contains?(&1, "missing refiner metadata"))
+    assert get_in(body, ["metadata", "has_judge"]) == false
+    assert get_in(body, ["metadata", "has_refiner"]) == false
+  end
 end

@@ -210,9 +210,11 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
     let workflow_path = app_data_dir.join("WORKFLOW.md");
     let workspace_root = app_data_dir.join("symphony_workspaces");
     fs::create_dir_all(&workspace_root).map_err(|e| e.to_string())?;
+    let agent_profiles_path = app_data_dir.join("agent_profiles.json");
     let log_path = app_log_path(&app)?;
     append_log(&log_path, &format!("--- starting bundled backend on {} ---", base_url(port)));
     append_log(&log_path, &format!("backend_dir={} executable={}", backend_dir.display(), executable.display()));
+    append_log(&log_path, &format!("workflow_path={} workspace_root={} agent_profiles_path={}", workflow_path.display(), workspace_root.display(), agent_profiles_path.display()));
 
     let mut command = if cfg!(windows) {
         let mut c = Command::new("cmd");
@@ -234,6 +236,7 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
         .env("PORT", port.to_string())
         .env("SYMPHONY_WORKFLOW_PATH", workflow_path.to_string_lossy().to_string())
         .env("SYMPHONY_WORKSPACE_ROOT", workspace_root.to_string_lossy().to_string())
+        .env("SYMPHONY_AGENT_PROFILES_PATH", agent_profiles_path.to_string_lossy().to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

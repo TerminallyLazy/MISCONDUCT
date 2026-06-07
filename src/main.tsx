@@ -118,8 +118,10 @@ const AgentProfileSchema = z.object({
   created_at: z.string().optional(),
   updated_at: z.string().optional()
 }).passthrough();
-const AgentProfilesResponseSchema = z.object({ profiles: z.array(AgentProfileSchema).default([]) });
+const AgentStorageSchema = z.object({ path: z.string().optional(), count: z.number().optional(), exists: z.boolean().optional(), writable: z.boolean().optional() }).passthrough();
+const AgentProfilesResponseSchema = z.object({ profiles: z.array(AgentProfileSchema).default([]), storage: AgentStorageSchema.optional(), count: z.number().optional() });
 type AgentProfile = z.infer<typeof AgentProfileSchema>;
+type AgentProfilesResponse = z.infer<typeof AgentProfilesResponseSchema>;
 type IdleMusician = {
   id: string;
   profile: AgentProfile;
@@ -253,9 +255,9 @@ function useKanban(base: string) {
 }
 
 function useAgentProfiles(base: string) {
-  return useQuery({
+  return useQuery<AgentProfilesResponse>({
     queryKey: ['agentProfiles', base],
-    queryFn: async () => AgentProfilesResponseSchema.parse(await api(base, '/api/agents')).profiles,
+    queryFn: async () => AgentProfilesResponseSchema.parse(await api(base, '/api/agents')),
     refetchInterval: 15_000
   });
 }
@@ -630,7 +632,8 @@ function App() {
   const [debugPayload, setDebugPayload] = useState<string | null>(null);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const cards = useMemo(() => makeCardsFromKanban(kanban.data), [kanban.data]);
-  const profiles = profilesQuery.data || [];
+  const profilesPayload = profilesQuery.data;
+  const profiles = profilesPayload?.profiles || [];
   const idleMusicians = useMemo(() => makeIdleMusicians(profiles, cards), [profiles, cards]);
   const hasLiveBackendData = Boolean(state.data && kanban.data);
   const hasPollingError = state.isError || kanban.isError;
@@ -681,8 +684,10 @@ function App() {
   });
   const saveAgentProfile = useMutation({
     mutationFn: (profile: AgentProfile) => {
-      const body = JSON.stringify(profile);
-      return profile.id
+      const isUpdate = Boolean(profile.id && profile.id.trim());
+      const payload = isUpdate ? profile : Object.fromEntries(Object.entries(profile).filter(([key, value]) => key !== 'id' && value !== ''));
+      const body = JSON.stringify(payload);
+      return isUpdate
         ? api(base, `/api/agents/${encodeURIComponent(profile.id)}`, { method: 'PATCH', body })
         : api(base, '/api/agents', { method: 'POST', body });
     },
@@ -798,12 +803,15 @@ function App() {
             <Agents
               cards={cards}
               profiles={profiles}
+              storage={profilesPayload?.storage}
               idleMusicians={idleMusicians}
               loading={profilesQuery.isLoading}
               busy={actionBusy}
+              saveError={saveAgentProfile.error instanceof Error ? saveAgentProfile.error.message : undefined}
+              deleteError={deleteAgentProfile.error instanceof Error ? deleteAgentProfile.error.message : undefined}
               setSelectedCardId={setSelectedCardId}
-              onSaveProfile={profile => saveAgentProfile.mutate(profile)}
-              onDeleteProfile={id => deleteAgentProfile.mutate(id)}
+              onSaveProfile={profile => saveAgentProfile.mutateAsync(profile)}
+              onDeleteProfile={id => deleteAgentProfile.mutateAsync(id)}
             />
           )}
           {tab === 'workflow' && <WorkflowPanel base={base} state={state.data} cards={cards} />}
@@ -1314,21 +1322,27 @@ function PixelPortrait({ role, label }: { role: string; label: string }) {
 function Agents({
   cards,
   profiles,
+  storage,
   idleMusicians,
   loading,
   busy,
+  saveError,
+  deleteError,
   setSelectedCardId,
   onSaveProfile,
   onDeleteProfile
 }: {
   cards: Card[];
   profiles: AgentProfile[];
+  storage?: z.infer<typeof AgentStorageSchema>;
   idleMusicians: IdleMusician[];
   loading: boolean;
   busy: boolean;
+  saveError?: string;
+  deleteError?: string;
   setSelectedCardId: (id: string) => void;
-  onSaveProfile: (profile: AgentProfile) => void;
-  onDeleteProfile: (id: string) => void;
+  onSaveProfile: (profile: AgentProfile) => Promise<unknown>;
+  onDeleteProfile: (id: string) => Promise<unknown>;
 }) {
   const liveAgents = Array.from(new Map(cards.map(c => [c.agent, c])).values());
   const [editing, setEditing] = useState<AgentProfile | null>(null);
@@ -1343,6 +1357,8 @@ function Agents({
           <button className="button primary" onClick={() => setEditing(emptyAgentProfile())}><Bot size={15} />New Agent</button>
         </div>
         {loading && <p className="subtle">Loading agent profiles…</p>}
+        {storage && <p className="subtle">Profile storage: {storage.writable === false ? 'not writable' : 'writable'} · {storage.path || 'unknown path'}</p>}
+        {(saveError || deleteError) && <p className="formError">{saveError || deleteError}</p>}
         <div className="agentTileGrid">
           {liveAgents.map(a => (
             <button className="agentTile pixelPanel live" key={a.agent} onClick={() => setSelectedCardId(a.id)}>
@@ -1365,21 +1381,22 @@ function Agents({
           {profiles.length === 0 && liveAgents.length === 0 && !loading && <div className="doc pixelPanel"><h2>No agent profiles configured</h2><p>Create an agent profile to add an idle musician to the orchestra.</p></div>}
         </div>
       </div>
-      <AgentProfileForm profile={editing} busy={busy} onCancel={() => setEditing(null)} onSave={profile => { onSaveProfile(profile); setEditing(null); }} onDelete={id => { onDeleteProfile(id); setEditing(null); }} />
+      <AgentProfileForm profile={editing} busy={busy} onCancel={() => setEditing(null)} onSave={async profile => { await onSaveProfile(profile); setEditing(null); }} onDelete={async id => { await onDeleteProfile(id); setEditing(null); }} />
     </section>
   );
 }
 
-function AgentProfileForm({ profile, busy, onSave, onCancel, onDelete }: { profile: AgentProfile | null; busy: boolean; onSave: (profile: AgentProfile) => void; onCancel: () => void; onDelete: (id: string) => void }) {
+function AgentProfileForm({ profile, busy, onSave, onCancel, onDelete }: { profile: AgentProfile | null; busy: boolean; onSave: (profile: AgentProfile) => Promise<void>; onCancel: () => void; onDelete: (id: string) => Promise<void> }) {
   const [draft, setDraft] = useState<AgentProfile>(profile || emptyAgentProfile());
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { setDraft(profile || emptyAgentProfile()); setError(null); }, [profile]);
   const update = <K extends keyof AgentProfile>(key: K, value: AgentProfile[K]) => setDraft(prev => ({ ...prev, [key]: value }));
-  const submit = () => {
+  const submit = async () => {
     try {
-      const payload = AgentProfileSchema.parse({ ...draft, capabilities: String(draft.capabilities || '').split(',').map(v => v.trim()).filter(Boolean) });
+      setError(null);
+      const payload = AgentProfileSchema.parse({ ...draft, capabilities: Array.isArray(draft.capabilities) ? draft.capabilities : String(draft.capabilities || '').split(',').map(v => v.trim()).filter(Boolean) });
       if (!payload.name.trim()) throw new Error('Name is required');
-      onSave(payload);
+      await onSave(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -1401,7 +1418,7 @@ function AgentProfileForm({ profile, busy, onSave, onCancel, onDelete }: { profi
       <label>Instructions</label><textarea className="tall" value={draft.instructions} onChange={e => update('instructions', e.target.value)} />
       <label className="checkRow"><input type="checkbox" checked={draft.enabled} onChange={e => update('enabled', e.target.checked)} /> Enabled / visible as idle musician</label>
       {error && <p className="formError">{error}</p>}
-      <div className="formActions"><button className="button primary" disabled={busy} onClick={submit}>Save profile</button><button className="button secondary" disabled={busy} onClick={onCancel}>Cancel</button>{draft.id && <button className="button danger" disabled={busy} onClick={() => onDelete(draft.id)}>Delete</button>}</div>
+      <div className="formActions"><button className="button primary" disabled={busy} onClick={submit}>Save profile</button><button className="button secondary" disabled={busy} onClick={onCancel}>Cancel</button>{draft.id && <button className="button danger" disabled={busy} onClick={async () => { try { setError(null); await onDelete(draft.id); } catch (err) { setError(err instanceof Error ? err.message : String(err)); } }}>Delete</button>}</div>
     </aside>
   );
 }

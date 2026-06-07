@@ -134,8 +134,10 @@ defmodule Symphony.Http.Api do
   end
 
   def list_agents(conn) do
-    case Symphony.AgentProfileRegistry.list() do
-      {:ok, profiles} -> json(conn, 200, %{profiles: profiles})
+    with {:ok, profiles} <- Symphony.AgentProfileRegistry.list(),
+         {:ok, metadata} <- Symphony.AgentProfileRegistry.metadata() do
+      json(conn, 200, %{profiles: profiles, count: length(profiles), storage: metadata})
+    else
       {:error, reason} -> error(conn, 500, reason)
     end
   end

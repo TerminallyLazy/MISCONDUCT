@@ -70,7 +70,8 @@ defmodule Symphony.Config do
        poll_interval_ms: int_or(getv(po, "interval_ms", nil), 30_000),
        workspace_root:
          expand_path(
-           resolve_env(getv(ws, "root", Path.join(System.tmp_dir!(), "symphony_workspaces"))),
+           System.get_env("SYMPHONY_WORKSPACE_ROOT") ||
+             resolve_env(getv(ws, "root", Path.join(System.tmp_dir!(), "symphony_workspaces"))),
            dir
          ),
        hooks: hk,
@@ -85,7 +86,12 @@ defmodule Symphony.Config do
        codex_read_timeout_ms: int_or(getv(cx, "read_timeout_ms", nil), 5_000),
        codex_stall_timeout_ms: int_or(getv(cx, "stall_timeout_ms", nil), 300_000),
        http_port: getv(sv, "port", nil),
-       agent_profiles_path: expand_path(resolve_env(getv(ag, "profiles_path", nil)), dir)
+       agent_profiles_path:
+         expand_path(
+           System.get_env("SYMPHONY_AGENT_PROFILES_PATH") ||
+             resolve_env(getv(ag, "profiles_path", nil)),
+           dir
+         )
      }}
   end
 

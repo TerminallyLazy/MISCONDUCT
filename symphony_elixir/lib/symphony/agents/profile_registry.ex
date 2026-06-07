@@ -18,6 +18,7 @@ defmodule Symphony.AgentProfileRegistry do
   end
 
   def list(server \\ __MODULE__), do: GenServer.call(server, :list)
+  def metadata(server \\ __MODULE__), do: GenServer.call(server, :metadata)
   def get(id, server \\ __MODULE__), do: GenServer.call(server, {:get, id})
   def create(attrs, server \\ __MODULE__), do: GenServer.call(server, {:create, attrs})
   def update(id, attrs, server \\ __MODULE__), do: GenServer.call(server, {:update, id, attrs})
@@ -33,6 +34,17 @@ defmodule Symphony.AgentProfileRegistry do
   @impl true
   def handle_call(:list, _from, state),
     do: {:reply, {:ok, Map.values(state.profiles) |> Enum.sort_by(& &1["name"])}, state}
+
+  def handle_call(:metadata, _from, state) do
+    {:reply,
+     {:ok,
+      %{
+        path: state.path,
+        count: map_size(state.profiles),
+        exists: File.exists?(state.path),
+        writable: writable?(state.path)
+      }}, state}
+  end
 
   def handle_call({:get, id}, _from, state) do
     case Map.fetch(state.profiles, id) do
@@ -129,7 +141,7 @@ defmodule Symphony.AgentProfileRegistry do
     now = DateTime.utc_now() |> DateTime.to_iso8601()
     name = attrs["name"] |> string_or("") |> String.trim()
     section = attrs["section"] |> string_or("Strings") |> known_section()
-    id = forced_id || attrs["id"] || slug(name)
+    id = blank_nil(forced_id) || blank_nil(attrs["id"]) || slug(name)
     workspace_key = attrs["workspace_key"] || attrs["workspaceKey"] || ""
 
     cond do
@@ -226,6 +238,20 @@ defmodule Symphony.AgentProfileRegistry do
     section = string_or(section, "Strings")
     if section in @default_sections, do: section, else: "Strings"
   end
+
+  defp writable?(path) do
+    File.mkdir_p!(Path.dirname(path))
+    probe = path <> ".write-test"
+    File.write!(probe, "ok")
+    File.rm(probe)
+    true
+  rescue
+    _ -> false
+  end
+
+  defp blank_nil(nil), do: nil
+  defp blank_nil(v) when is_binary(v), do: if(String.trim(v) == "", do: nil, else: v)
+  defp blank_nil(v), do: v
 
   defp string_or(nil, default), do: default
   defp string_or(v, _default), do: to_string(v)
