@@ -50,6 +50,13 @@ jobs:
           targets: ${{ matrix.rust-targets }}
       - name: Install frontend dependencies
         run: npm ci
+      - name: Regenerate macOS app icon
+        if: runner.os == 'macOS'
+        run: |
+          if [ -d src-tauri/icons/icon.iconset ]; then
+            iconutil -c icns src-tauri/icons/icon.iconset -o src-tauri/icons/icon.icns
+          fi
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
