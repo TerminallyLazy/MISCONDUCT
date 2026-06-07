@@ -587,6 +587,29 @@ type CodexAuthPayload = {
   [key: string]: unknown;
 };
 
+
+type BackendRuntimePayload = {
+  baseUrl?: string;
+  host?: string;
+  port?: number;
+  source?: string;
+  healthy?: boolean;
+  managed?: boolean;
+  pid?: number | null;
+  logPath?: string | null;
+  lastError?: string | null;
+  [key: string]: unknown;
+};
+
+function useBackendRuntime() {
+  return useQuery({
+    queryKey: ['backendRuntime'],
+    queryFn: async () => invoke<BackendRuntimePayload>('backend_status'),
+    refetchInterval: 3_000,
+    retry: 1
+  });
+}
+
 function useCodexAuth(base: string) {
   return useQuery({
     queryKey: ['codexAuth', base],
@@ -603,6 +626,7 @@ function App() {
   const kanban = useKanban(base);
   const profilesQuery = useAgentProfiles(base);
   const codexAuth = useCodexAuth(base);
+  const backendRuntime = useBackendRuntime();
   const [debugPayload, setDebugPayload] = useState<string | null>(null);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const cards = useMemo(() => makeCardsFromKanban(kanban.data), [kanban.data]);
@@ -617,18 +641,16 @@ function App() {
   const selectedCard = cards.find(card => card.id === selectedCardId) || cards[0];
 
   useEffect(() => {
-    if (base) return;
-    invoke<string>('default_api_base_url')
-      .then(defaultBase => {
-        if (!defaultBase) return;
-        const saved = localStorage.getItem('symphony.apiBase');
-        if (saved && saved.trim()) return;
-        setBase(defaultBase);
+    const saved = localStorage.getItem('symphony.apiBase');
+    if (saved && saved.trim()) return;
+    invoke<BackendRuntimePayload>('ensure_backend_ready')
+      .then(status => {
+        if (status?.baseUrl) setBase(status.baseUrl);
       })
       .catch(() => {
         // Browser/Vite dev mode uses the same-origin proxy when no Tauri bridge is present.
       });
-  }, [base]);
+  }, []);
 
   useEffect(() => {
     if (selectedCardId && cards.some(card => card.id === selectedCardId)) return;
@@ -682,13 +704,32 @@ function App() {
     mutationFn: () => api<CodexAuthPayload>(base, '/api/codex/auth/logout', { method: 'POST', body: '{}' }, 10_000),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['codexAuth', base] })
   });
+  const startBundledBackend = useMutation({
+    mutationFn: () => invoke<BackendRuntimePayload>('ensure_backend_ready'),
+    onSuccess: status => {
+      if (status?.baseUrl) setBase(status.baseUrl);
+      queryClient.invalidateQueries({ queryKey: ['backendRuntime'] });
+      invalidateLiveData();
+    }
+  });
+  const restartBundledBackend = useMutation({
+    mutationFn: () => invoke<BackendRuntimePayload>('backend_restart'),
+    onSuccess: status => {
+      if (status?.baseUrl) setBase(status.baseUrl);
+      queryClient.invalidateQueries({ queryKey: ['backendRuntime'] });
+      invalidateLiveData();
+    }
+  });
+  const backendLogs = useMutation({
+    mutationFn: () => invoke<{ logPath?: string; text: string }>('backend_logs', { maxBytes: 65536 })
+  });
   const saveBase = (v: string) => {
     localStorage.setItem('symphony.apiBase', v);
     setBase(v.trim());
     queryClient.invalidateQueries();
   };
 
-  const actionBusy = refresh.isPending || debugIssue.isPending || moveIssue.isPending || issueAction.isPending || saveAgentProfile.isPending || deleteAgentProfile.isPending || startCodexLogin.isPending || checkCodexAuth.isPending || logoutCodex.isPending;
+  const actionBusy = refresh.isPending || debugIssue.isPending || moveIssue.isPending || issueAction.isPending || saveAgentProfile.isPending || deleteAgentProfile.isPending || startCodexLogin.isPending || checkCodexAuth.isPending || logoutCodex.isPending || startBundledBackend.isPending || restartBundledBackend.isPending;
 
   return (
     <div className="concertShell">
@@ -775,6 +816,14 @@ function App() {
               codexLoading={codexAuth.isLoading}
               codexError={codexAuth.error instanceof Error ? codexAuth.error.message : codexAuth.isError ? 'Unable to reach Codex auth endpoint.' : undefined}
               codexBusy={startCodexLogin.isPending || checkCodexAuth.isPending || logoutCodex.isPending}
+              backendRuntime={backendRuntime.data}
+              backendRuntimeError={backendRuntime.error instanceof Error ? backendRuntime.error.message : backendRuntime.isError ? 'Tauri backend manager unavailable in browser/dev mode.' : undefined}
+              backendBusy={startBundledBackend.isPending || restartBundledBackend.isPending}
+              backendLogs={backendLogs.data}
+              onStartBackend={() => startBundledBackend.mutate()}
+              onRestartBackend={() => restartBundledBackend.mutate()}
+              onRefreshBackend={() => queryClient.invalidateQueries({ queryKey: ['backendRuntime'] })}
+              onLoadBackendLogs={() => backendLogs.mutate()}
               onStartCodexLogin={() => startCodexLogin.mutate()}
               onCheckCodex={() => checkCodexAuth.mutate()}
               onLogoutCodex={() => logoutCodex.mutate()}
@@ -1530,6 +1579,14 @@ function SettingsPanel({
   codexLoading,
   codexError,
   codexBusy,
+  backendRuntime,
+  backendRuntimeError,
+  backendBusy,
+  backendLogs,
+  onStartBackend,
+  onRestartBackend,
+  onRefreshBackend,
+  onLoadBackendLogs,
   onStartCodexLogin,
   onCheckCodex,
   onLogoutCodex
@@ -1540,6 +1597,14 @@ function SettingsPanel({
   codexLoading: boolean;
   codexError?: string;
   codexBusy: boolean;
+  backendRuntime?: BackendRuntimePayload;
+  backendRuntimeError?: string;
+  backendBusy: boolean;
+  backendLogs?: { logPath?: string; text: string };
+  onStartBackend: () => void;
+  onRestartBackend: () => void;
+  onRefreshBackend: () => void;
+  onLoadBackendLogs: () => void;
   onStartCodexLogin: () => void;
   onCheckCodex: () => void;
   onLogoutCodex: () => void;
@@ -1568,15 +1633,44 @@ function SettingsPanel({
         <span className={`pill ${codexConnected ? 'active' : 'neutral'}`}><BrainCircuit size={14} /> {codexStatus}</span>
       </div>
 
-      <div className="doc pixelPanel">
-        <h2><Server size={20} /> Symphony backend</h2>
-        <label htmlFor="apiBase">Symphony API base URL</label>
-        <div className="settingsRow">
-          <input id="apiBase" value={v} onChange={e => setV(e.target.value)} placeholder="Blank in dev; packaged app uses http://127.0.0.1:4004" />
-          <button className="button primary" onClick={() => saveBase(v)}>Save</button>
-          <button className="button secondary" onClick={() => { setV('http://127.0.0.1:4004'); saveBase('http://127.0.0.1:4004'); }}>Use local backend</button>
+      <div className="doc pixelPanel backendControlPanel">
+        <div className="panelHeader">
+          <div>
+            <p className="eyebrow">Managed local runtime</p>
+            <h2><Server size={20} /> Bundled Symphony backend</h2>
+          </div>
+          <span className={`pill ${backendRuntime?.healthy ? 'active' : 'neutral'}`}>{backendRuntime?.healthy ? 'Backend ready' : backendBusy ? 'Starting…' : 'Backend manager'}</span>
         </div>
-        <p className="subtle">Current base: <code>{base || 'same-origin Vite proxy / awaiting Tauri default'}</code></p>
+        <p className="subtle">The packaged desktop app now starts and supervises its own local backend. No separate backend service should be required.</p>
+        <div className="codexStatusGrid">
+          <div><span>Managed</span><b>{backendRuntime?.managed ? 'yes' : 'not yet'}</b></div>
+          <div><span>Healthy</span><b>{backendRuntime?.healthy ? 'yes' : 'pending'}</b></div>
+          <div><span>Port</span><b>{backendRuntime?.port || 'auto'}</b></div>
+          <div><span>Source</span><b>{String(backendRuntime?.source || 'bundled backend')}</b></div>
+        </div>
+        {backendRuntimeError && <p className="formError">{backendRuntimeError}</p>}
+        {backendRuntime?.lastError && <p className="formError">{String(backendRuntime.lastError)}</p>}
+        <div className="formActions">
+          <button className="button primary" disabled={backendBusy} onClick={onStartBackend}><PlayCircle size={15} /> Start bundled backend</button>
+          <button className="button secondary" disabled={backendBusy} onClick={onRestartBackend}><RefreshCw size={15} /> Restart backend</button>
+          <button className="button secondary" disabled={backendBusy} onClick={onRefreshBackend}>Refresh status</button>
+          <button className="button secondary" disabled={backendBusy} onClick={onLoadBackendLogs}>Show logs</button>
+        </div>
+        <div className="targetPreview">
+          <b>Current API base</b>
+          <code>{backendRuntime?.baseUrl || base || 'starting bundled backend…'}</code>
+          {backendRuntime?.logPath && <small>Backend log: {backendRuntime.logPath}</small>}
+        </div>
+        {backendLogs?.text && <pre className="backendLogBox">{backendLogs.text}</pre>}
+        <details className="advancedBackendSettings">
+          <summary>Advanced: override API base URL</summary>
+          <label htmlFor="apiBase">Symphony API base URL</label>
+          <div className="settingsRow">
+            <input id="apiBase" value={v} onChange={e => setV(e.target.value)} placeholder="Leave blank to use bundled backend" />
+            <button className="button primary" onClick={() => saveBase(v)}>Save override</button>
+            <button className="button secondary" onClick={() => { localStorage.removeItem('symphony.apiBase'); setV(''); onStartBackend(); }}>Use bundled backend</button>
+          </div>
+        </details>
       </div>
 
       <div className="doc pixelPanel codexConnectPanel">

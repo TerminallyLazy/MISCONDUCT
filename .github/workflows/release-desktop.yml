@@ -16,10 +16,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: macos-universal
-            os: macos-latest
-            rust-targets: x86_64-apple-darwin,aarch64-apple-darwin
-            args: --target universal-apple-darwin
+          - label: macos-x86_64
+            os: macos-13
+            rust-targets: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+          - label: macos-arm64
+            os: macos-14
+            rust-targets: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
           - label: windows-x86_64
             os: windows-latest
             rust-targets: x86_64-pc-windows-msvc
@@ -39,7 +43,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev curl file p7zip-full
+      - name: Install Windows verification tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install 7zip -y --no-progress
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -48,21 +56,81 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust-targets }}
+      - name: Setup Erlang/Elixir for bundled backend
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27'
+          elixir-version: '1.18'
       - name: Install frontend dependencies
         run: npm ci
+      - name: Build Elixir backend release
+        shell: bash
+        working-directory: symphony_elixir
+        env:
+          MIX_ENV: prod
+        run: |
+          set -euxo pipefail
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get --only prod
+          mix compile
+          mix release symphony_elixir --overwrite
+      - name: Stage backend release for Tauri bundle
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf src-tauri/resources/symphony_backend
+          mkdir -p src-tauri/resources
+          cp -a symphony_elixir/_build/prod/rel/symphony_elixir src-tauri/resources/symphony_backend
+          test -d src-tauri/resources/symphony_backend/bin
+          test -d src-tauri/resources/symphony_backend/releases
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            test -f src-tauri/resources/symphony_backend/bin/symphony_elixir.bat
+          else
+            test -x src-tauri/resources/symphony_backend/bin/symphony_elixir
+          fi
+      - name: Smoke-test staged backend release
+        shell: bash
+        env:
+          SYMPHONY_HTTP_PORT: '4104'
+          SYMPHONY_HTTP_HOST: '127.0.0.1'
+          SYMPHONY_HTTP_ENABLED: 'true'
+        run: |
+          set -euxo pipefail
+          cd src-tauri/resources/symphony_backend
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./bin/symphony_elixir.bat start
+          else
+            ./bin/symphony_elixir start
+          fi
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:4104/healthz; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:4104/healthz
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./bin/symphony_elixir.bat stop || true
+          else
+            ./bin/symphony_elixir stop || true
+          fi
       - name: Regenerate macOS app icon
         if: runner.os == 'macOS'
         run: |
           if [ -d src-tauri/icons/icon.iconset ]; then
             iconutil -c icns src-tauri/icons/icon.iconset -o src-tauri/icons/icon.icns
           fi
-
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: ${{ matrix.args }}
+      - name: Verify bundled backend files exist
+        shell: bash
+        run: |
+          set -euxo pipefail
+          find src-tauri/target -type f \( -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.exe' -o -name '*.msi' -o -name '*.app.tar.gz' \) -print
+          find src-tauri/resources/symphony_backend -maxdepth 3 -type f | sort | head -80
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
         with:

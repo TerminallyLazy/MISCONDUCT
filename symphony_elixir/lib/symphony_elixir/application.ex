@@ -22,7 +22,7 @@ defmodule SymphonyElixir.Application do
   end
 
   defp http_child(config) do
-    enabled = Application.get_env(:symphony_elixir, :http_enabled, Mix.env() != :test)
+    enabled = Application.get_env(:symphony_elixir, :http_enabled, true)
 
     port =
       String.to_integer(

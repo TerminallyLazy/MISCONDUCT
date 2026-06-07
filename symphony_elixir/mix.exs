@@ -8,7 +8,8 @@ defmodule SymphonyElixir.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: [check: ["format", "test"]]
+      aliases: [check: ["format", "test"]],
+      releases: releases()
     ]
 
   def application,
@@ -16,6 +17,17 @@ defmodule SymphonyElixir.MixProject do
       extra_applications: [:logger, :crypto, :inets, :ssl],
       mod: {SymphonyElixir.Application, []}
     ]
+
+  defp releases do
+    [
+      symphony_elixir: [
+        include_erts: true,
+        include_executables_for: [:unix, :windows],
+        applications: [symphony_elixir: :permanent],
+        strip_beams: Mix.env() == :prod
+      ]
+    ]
+  end
 
   defp deps,
     do: [
