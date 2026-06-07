@@ -216,11 +216,11 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
 
     let mut command = if cfg!(windows) {
         let mut c = Command::new("cmd");
-        c.arg("/C").arg(&executable).arg("foreground");
+        c.arg("/C").arg(&executable).arg("start");
         c
     } else {
         let mut c = Command::new(&executable);
-        c.arg("foreground");
+        c.arg("start");
         c
     };
 
@@ -265,8 +265,25 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
         last_error: None,
     });
 
-    if !wait_for_health(port, Duration::from_secs(20)) {
-        let msg = format!("Bundled backend did not become healthy at {}", base_url(port));
+    if !wait_for_health(port, Duration::from_secs(30)) {
+        let exit_note = match child_lock.as_mut().and_then(|child| child.try_wait().ok()).flatten() {
+            Some(status) => format!(" Process exited early with status: {status}."),
+            None => " Process is still running but health did not respond.".to_string(),
+        };
+        let log_tail = fs::read_to_string(&log_path)
+            .ok()
+            .map(|text| {
+                let tail: Vec<&str> = text.lines().rev().take(20).collect();
+                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+            })
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_else(|| "No backend log output captured yet.".to_string());
+        let msg = format!(
+            "Bundled backend did not become healthy at {}.{} Latest backend log:\n{}",
+            base_url(port),
+            exit_note,
+            log_tail
+        );
         append_log(&log_path, &msg);
         *state.last_error.lock().unwrap() = Some(msg.clone());
         return Err(msg);
