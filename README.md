@@ -1,0 +1,43 @@
+# Misconducting / Symphony Console
+
+A pixel-art orchestral conductor console for coordinating real Linear issues, Codex-backed agents, workflow files, agent profiles, and live task state.
+
+## Desktop downloads
+
+Download packaged builds from GitHub Releases:
+
+https://github.com/TerminallyLazy/misconducting/releases/latest
+
+Current locally built release assets are Linux ARM64:
+
+- `Symphony Console_0.1.1_aarch64.AppImage`
+- `Symphony Console_0.1.1_arm64.deb`
+
+The GitHub Actions workflow `.github/workflows/release-desktop.yml` is configured to build macOS, Windows, Linux x86_64, and Linux ARM64 packages from release tags.
+
+## Development
+
+Frontend/Tauri desktop app is at the repository root.
+
+```bash
+npm install
+npm run build
+npm run tauri:build
+```
+
+Backend source lives in `symphony_elixir/`.
+
+```bash
+cd symphony_elixir
+mix test
+```
+
+## Codex auth model
+
+Symphony uses the Codex CLI as the OAuth/session owner for ChatGPT/Codex Pro. The app exposes sanitized status and login/check/logout controls; it does not ask users to paste OAuth tokens.
+
+## Release automation note
+
+A cross-platform GitHub Actions workflow has been prepared locally, but publishing workflow files requires a GitHub token with the `workflow` scope. The initial repository push intentionally omits `.github/workflows/release-desktop.yml` because the available token cannot create workflow files.
+
+Current downloadable assets are published on the GitHub Release page.

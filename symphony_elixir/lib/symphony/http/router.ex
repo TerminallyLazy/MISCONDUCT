@@ -1,0 +1,52 @@
+defmodule Symphony.Http.Router do
+  use Plug.Router
+
+  plug(Plug.Logger)
+  plug(:cors)
+  plug(:match)
+  plug(Plug.Parsers, parsers: [:json], json_decoder: Jason, pass: ["application/json"])
+  plug(:dispatch)
+
+  defp cors(conn, _opts) do
+    conn
+    |> Plug.Conn.put_resp_header("access-control-allow-origin", "*")
+    |> Plug.Conn.put_resp_header("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS")
+    |> Plug.Conn.put_resp_header("access-control-allow-headers", "content-type,authorization")
+  end
+
+  options(_, do: send_resp(conn, 204, ""))
+
+  get("/", do: Symphony.Http.Api.dashboard(conn))
+  get("/dashboard", do: Symphony.Http.Api.dashboard(conn))
+  get("/healthz", do: Symphony.Http.Api.health(conn))
+  get("/api/v1/state", do: Symphony.Http.Api.state(conn))
+  get("/api/state", do: Symphony.Http.Api.state(conn))
+  get("/api/status", do: Symphony.Http.Api.state(conn))
+  get("/api/kanban", do: Symphony.Http.Api.kanban(conn))
+  get("/api/board", do: Symphony.Http.Api.kanban(conn))
+  get("/api/workflow", do: Symphony.Http.Api.workflow(conn))
+  get("/api/workflows", do: Symphony.Http.Api.list_workflows(conn))
+  post("/api/workflows", do: Symphony.Http.Api.create_workflow(conn))
+  post("/api/workflows/generate", do: Symphony.Http.Api.generate_workflow(conn))
+  post("/api/workflows/validate", do: Symphony.Http.Api.validate_workflow(conn))
+  post("/api/workflows/preview", do: Symphony.Http.Api.preview_workflow(conn))
+  post("/api/workflows/move", do: Symphony.Http.Api.move_workflow(conn))
+  get("/api/workflows/templates", do: Symphony.Http.Api.list_workflow_templates(conn))
+  get("/api/codex/cli/status", do: Symphony.Http.Api.codex_cli_status(conn))
+  get("/api/codex/auth/status", do: Symphony.Http.Api.codex_auth_status(conn))
+  post("/api/codex/auth/login/start", do: Symphony.Http.Api.codex_auth_login_start(conn))
+  post("/api/codex/auth/check", do: Symphony.Http.Api.codex_auth_check(conn))
+  post("/api/codex/auth/logout", do: Symphony.Http.Api.codex_auth_logout(conn))
+  get("/api/agents", do: Symphony.Http.Api.list_agents(conn))
+  post("/api/agents", do: Symphony.Http.Api.create_agent(conn))
+  get("/api/agents/:id", do: Symphony.Http.Api.get_agent(conn, id))
+  patch("/api/agents/:id", do: Symphony.Http.Api.update_agent(conn, id))
+  delete("/api/agents/:id", do: Symphony.Http.Api.delete_agent(conn, id))
+  post("/api/workflow/reload", do: Symphony.Http.Api.reload_workflow(conn))
+  post("/api/v1/refresh", do: Symphony.Http.Api.refresh(conn))
+  post("/api/refresh", do: Symphony.Http.Api.refresh(conn))
+  get("/api/issues/:id/debug", do: Symphony.Http.Api.debug_issue(conn, id))
+  post("/api/issues/:id/move", do: Symphony.Http.Api.move_issue(conn, id))
+  post("/api/issues/:id/actions/:action", do: Symphony.Http.Api.issue_action(conn, id, action))
+  match(_, do: Symphony.Http.Api.not_found(conn))
+end

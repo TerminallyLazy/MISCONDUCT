@@ -1,0 +1,11 @@
+node_modules/
+dist/
+src-tauri/target/
+.DS_Store
+.env
+.env.*
+*.log
+symphony_elixir/_build/
+symphony_elixir/deps/
+symphony_elixir/symphony_workspaces/
+symphony_elixir/erl_crash.dump

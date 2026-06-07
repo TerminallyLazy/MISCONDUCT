@@ -1,0 +1,19 @@
+defmodule Symphony.Run do
+  @derive Jason.Encoder
+  defstruct issue_id: nil,
+            issue_identifier: nil,
+            workspace_path: nil,
+            session_id: nil,
+            started_at: nil,
+            last_event_at: nil,
+            last_event: nil,
+            last_message: nil,
+            status: :queued,
+            issue: nil,
+            attempt: nil,
+            turn_count: 0,
+            tokens: %{input_tokens: 0, output_tokens: 0, total_tokens: 0},
+            error: nil,
+            events: [],
+            prompt: nil
+end
