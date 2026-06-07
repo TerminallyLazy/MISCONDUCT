@@ -450,3 +450,75 @@ textarea.tall { min-height: 150px; }
 .workflowSelectedTemplate span { font-size: 10px; color: #8a5b29; text-transform: uppercase; }
 .workflowEditor { width: 100% !important; max-width: 100% !important; min-width: 100% !important; display: block; resize: vertical; overflow: auto; white-space: pre; }
 .workflowFieldGrid > label { min-width: 0; }
+
+.statusDot.reconnecting {
+  background: #f4b942;
+  box-shadow: 0 0 0 3px rgba(244, 185, 66, 0.18), 0 0 14px rgba(244, 185, 66, 0.45);
+  animation: pulseDot 1.2s ease-in-out infinite;
+}
+
+.reconnectBanner {
+  border-color: rgba(244, 185, 66, 0.55);
+  background: rgba(244, 185, 66, 0.12);
+}
+
+@keyframes pulseDot {
+  0%, 100% { transform: scale(1); opacity: 0.72; }
+  50% { transform: scale(1.18); opacity: 1; }
+}
+
+.settingsStack {
+  display: grid;
+  gap: 16px;
+}
+
+.settingsHero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.codexConnectPanel {
+  border-color: rgba(157, 112, 255, 0.45);
+  background: linear-gradient(135deg, rgba(255, 250, 232, 0.96), rgba(238, 229, 255, 0.92));
+}
+
+.codexStatusGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.codexStatusGrid > div {
+  border: 2px solid rgba(43, 31, 58, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.56);
+  padding: 10px;
+  min-width: 0;
+}
+
+.codexStatusGrid span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.codexStatusGrid b {
+  display: block;
+  overflow-wrap: anywhere;
+  margin-top: 4px;
+}
+
+.pill.danger {
+  background: rgba(226, 77, 77, 0.14);
+  color: #8e1f1f;
+}
+
+@media (max-width: 900px) {
+  .settingsHero { flex-direction: column; }
+  .codexStatusGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

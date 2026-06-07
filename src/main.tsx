@@ -33,10 +33,11 @@ import {
   Mic2
 } from 'lucide-react';
 import { z } from 'zod';
+import { invoke } from '@tauri-apps/api/core';
 import './styles.css';
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: 1, staleTime: 2_500, refetchOnWindowFocus: false } }
+  defaultOptions: { queries: { retry: 2, retryDelay: 800, staleTime: 10_000, refetchOnWindowFocus: false } }
 });
 
 const StateSchema = z.object({
@@ -209,10 +210,10 @@ const nav: { id: Tab; label: string; icon: React.ElementType }[] = [
 
 function getApiBase() {
   const saved = localStorage.getItem('symphony.apiBase');
-  return saved && saved !== 'http://127.0.0.1:4004' ? saved : '';
+  return saved?.trim() || '';
 }
 
-async function api<T>(base: string, path: string, init?: RequestInit, timeoutMs = 1800): Promise<T> {
+async function api<T>(base: string, path: string, init?: RequestInit, timeoutMs = 7_500): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -239,7 +240,7 @@ function useSymphonyState(base: string) {
   return useQuery({
     queryKey: ['state', base],
     queryFn: async () => StateSchema.parse(await api(base, '/api/v1/state')),
-    refetchInterval: 5_000
+    refetchInterval: 7_500
   });
 }
 
@@ -247,7 +248,7 @@ function useKanban(base: string) {
   return useQuery({
     queryKey: ['kanban', base],
     queryFn: async () => KanbanSchema.parse(await api(base, '/api/kanban')),
-    refetchInterval: 5_000
+    refetchInterval: 7_500
   });
 }
 
@@ -255,7 +256,7 @@ function useAgentProfiles(base: string) {
   return useQuery({
     queryKey: ['agentProfiles', base],
     queryFn: async () => AgentProfilesResponseSchema.parse(await api(base, '/api/agents')).profiles,
-    refetchInterval: 10_000
+    refetchInterval: 15_000
   });
 }
 
@@ -572,21 +573,62 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
 }
 
 
+type CodexAuthPayload = {
+  available?: boolean;
+  authenticated?: boolean;
+  status?: string;
+  message?: string;
+  version?: string;
+  command?: string;
+  login_command?: string;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  [key: string]: unknown;
+};
+
+function useCodexAuth(base: string) {
+  return useQuery({
+    queryKey: ['codexAuth', base],
+    queryFn: async () => api<CodexAuthPayload>(base, '/api/codex/auth/status', undefined, 7_500),
+    refetchInterval: 20_000
+  });
+}
+
+
 function App() {
   const [tab, setTab] = useState<Tab>('console');
   const [base, setBase] = useState(getApiBase());
   const state = useSymphonyState(base);
   const kanban = useKanban(base);
   const profilesQuery = useAgentProfiles(base);
+  const codexAuth = useCodexAuth(base);
   const [debugPayload, setDebugPayload] = useState<string | null>(null);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const cards = useMemo(() => makeCardsFromKanban(kanban.data), [kanban.data]);
   const profiles = profilesQuery.data || [];
   const idleMusicians = useMemo(() => makeIdleMusicians(profiles, cards), [profiles, cards]);
-  const offline = state.isError || kanban.isError;
+  const hasLiveBackendData = Boolean(state.data && kanban.data);
+  const hasPollingError = state.isError || kanban.isError;
+  const offline = hasPollingError && !hasLiveBackendData;
+  const reconnecting = hasPollingError && hasLiveBackendData;
   const [audioEnabled, setAudioEnabled] = useState(false);
   const orchestraAudio = useAgentOrchestra({ enabled: audioEnabled, cards, offline });
   const selectedCard = cards.find(card => card.id === selectedCardId) || cards[0];
+
+  useEffect(() => {
+    if (base) return;
+    invoke<string>('default_api_base_url')
+      .then(defaultBase => {
+        if (!defaultBase) return;
+        const saved = localStorage.getItem('symphony.apiBase');
+        if (saved && saved.trim()) return;
+        setBase(defaultBase);
+      })
+      .catch(() => {
+        // Browser/Vite dev mode uses the same-origin proxy when no Tauri bridge is present.
+      });
+  }, [base]);
 
   useEffect(() => {
     if (selectedCardId && cards.some(card => card.id === selectedCardId)) return;
@@ -628,13 +670,25 @@ function App() {
     mutationFn: (id: string) => api(base, `/api/agents/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agentProfiles', base] })
   });
+  const startCodexLogin = useMutation({
+    mutationFn: () => api<CodexAuthPayload>(base, '/api/codex/auth/login/start', { method: 'POST', body: '{}' }, 15_000),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['codexAuth', base] })
+  });
+  const checkCodexAuth = useMutation({
+    mutationFn: () => api<CodexAuthPayload>(base, '/api/codex/auth/check', { method: 'POST', body: '{}' }, 10_000),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['codexAuth', base] })
+  });
+  const logoutCodex = useMutation({
+    mutationFn: () => api<CodexAuthPayload>(base, '/api/codex/auth/logout', { method: 'POST', body: '{}' }, 10_000),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['codexAuth', base] })
+  });
   const saveBase = (v: string) => {
     localStorage.setItem('symphony.apiBase', v);
     setBase(v.trim());
     queryClient.invalidateQueries();
   };
 
-  const actionBusy = refresh.isPending || debugIssue.isPending || moveIssue.isPending || issueAction.isPending || saveAgentProfile.isPending || deleteAgentProfile.isPending;
+  const actionBusy = refresh.isPending || debugIssue.isPending || moveIssue.isPending || issueAction.isPending || saveAgentProfile.isPending || deleteAgentProfile.isPending || startCodexLogin.isPending || checkCodexAuth.isPending || logoutCodex.isPending;
 
   return (
     <div className="concertShell">
@@ -661,26 +715,28 @@ function App() {
           <PixelPortrait role="maestroPortrait" label="MC" />
           <div>
             <b>Maestro</b>
-            <span>{offline ? 'awaiting orchestra' : 'conducting live'}</span>
+            <span>{offline ? 'awaiting orchestra' : reconnecting ? 'holding last cue' : 'conducting live'}</span>
           </div>
         </div>
         <div className="sidebarFooter">
-          <span className={offline ? 'statusDot offline' : 'statusDot online'} />
-          {offline ? 'Backend unavailable' : 'Connected via API'}
+          <span className={offline ? 'statusDot offline' : reconnecting ? 'statusDot reconnecting' : 'statusDot online'} />
+          {offline ? 'Backend unavailable' : reconnecting ? 'Reconnecting… live cache held' : 'Connected via API'}
         </div>
       </aside>
 
       <main className="concertWorkspace">
         <ConcertHeader
           offline={offline}
+          reconnecting={reconnecting}
           onRefresh={() => refresh.mutate()}
           busy={refresh.isPending}
           audioEnabled={audioEnabled}
           onToggleAudio={() => setAudioEnabled(value => !value)}
           orchestraAudio={orchestraAudio}
         />
-        <MetricsStrip state={state.data} online={!offline} />
+        <MetricsStrip state={state.data} online={!offline} reconnecting={reconnecting} />
         {offline && <OfflineBanner base={base} />}
+        {reconnecting && <ReconnectBanner base={base} />}
         <section className="contentArea" aria-live="polite">
           {tab === 'console' && (
             <OrchestraFloor
@@ -711,7 +767,19 @@ function App() {
           )}
           {tab === 'workflow' && <WorkflowPanel base={base} state={state.data} cards={cards} />}
           {tab === 'safety' && <SafetyPanel />}
-          {tab === 'settings' && <SettingsPanel base={base} saveBase={saveBase} />}
+          {tab === 'settings' && (
+            <SettingsPanel
+              base={base}
+              saveBase={saveBase}
+              codexAuth={codexAuth.data}
+              codexLoading={codexAuth.isLoading}
+              codexError={codexAuth.error instanceof Error ? codexAuth.error.message : codexAuth.isError ? 'Unable to reach Codex auth endpoint.' : undefined}
+              codexBusy={startCodexLogin.isPending || checkCodexAuth.isPending || logoutCodex.isPending}
+              onStartCodexLogin={() => startCodexLogin.mutate()}
+              onCheckCodex={() => checkCodexAuth.mutate()}
+              onLogoutCodex={() => logoutCodex.mutate()}
+            />
+          )}
         </section>
       </main>
 
@@ -731,6 +799,7 @@ function App() {
 
 function ConcertHeader({
   offline,
+  reconnecting,
   onRefresh,
   busy,
   audioEnabled,
@@ -738,6 +807,7 @@ function ConcertHeader({
   orchestraAudio
 }: {
   offline: boolean;
+  reconnecting: boolean;
   onRefresh: () => void;
   busy: boolean;
   audioEnabled: boolean;
@@ -749,7 +819,7 @@ function ConcertHeader({
       <div>
         <p className="eyebrow">Live score for autonomous work</p>
         <h1>Conductor View</h1>
-        <p className="subtle">{offline ? 'The pit is quiet until the backend returns' : 'Real Linear issues conducted by Codex agents'} · musicians, movements, and generated score</p>
+        <p className="subtle">{offline ? 'The pit is quiet until the backend returns' : reconnecting ? 'Holding the last live score while the backend reconnects' : 'Real Linear issues conducted by Codex agents'} · musicians, movements, and generated score</p>
       </div>
       <div className="actions">
         <span className={`pill audioPill ${audioEnabled ? 'active' : 'neutral'}`} title={orchestraAudio.error || 'Generated from live agent cards'}>
@@ -765,9 +835,9 @@ function ConcertHeader({
   );
 }
 
-function MetricsStrip({ state, online }: { state?: SymphonyState; online: boolean }) {
+function MetricsStrip({ state, online, reconnecting }: { state?: SymphonyState; online: boolean; reconnecting?: boolean }) {
   const metrics = [
-    { value: online ? 'Live' : 'Silent', label: 'House', icon: Radio },
+    { value: reconnecting ? 'Holding' : online ? 'Live' : 'Silent', label: 'House', icon: Radio },
     { value: state?.counts.running ?? 0, label: 'Playing', icon: Volume2 },
     { value: state?.counts.retrying ?? 0, label: 'Retuning', icon: Clock },
     { value: state?.counts.completed ?? 0, label: 'Finale', icon: CheckCircle2 },
@@ -790,7 +860,16 @@ function OfflineBanner({ base }: { base: string }) {
   return (
     <div className="banner pixelPanel">
       <WifiOff size={18} />
-      <span>Backend unavailable at <code>{base || 'same-origin Vite proxy'}</code>. No placeholder data is displayed.</span>
+      <span>Backend unavailable at <code>{base || 'same-origin Vite proxy / awaiting Tauri default'}</code>. No placeholder data is displayed.</span>
+    </div>
+  );
+}
+
+function ReconnectBanner({ base }: { base: string }) {
+  return (
+    <div className="banner reconnectBanner pixelPanel">
+      <Radio size={18} />
+      <span>Backend heartbeat missed at <code>{base || 'same-origin Vite proxy / awaiting Tauri default'}</code>; holding the last live score while reconnecting.</span>
     </div>
   );
 }
@@ -1444,17 +1523,87 @@ function SafetyPanel() {
   );
 }
 
-function SettingsPanel({ base, saveBase }: { base: string; saveBase: (v: string) => void }) {
+function SettingsPanel({
+  base,
+  saveBase,
+  codexAuth,
+  codexLoading,
+  codexError,
+  codexBusy,
+  onStartCodexLogin,
+  onCheckCodex,
+  onLogoutCodex
+}: {
+  base: string;
+  saveBase: (v: string) => void;
+  codexAuth?: CodexAuthPayload;
+  codexLoading: boolean;
+  codexError?: string;
+  codexBusy: boolean;
+  onStartCodexLogin: () => void;
+  onCheckCodex: () => void;
+  onLogoutCodex: () => void;
+}) {
   const [v, setV] = useState(base);
+  useEffect(() => setV(base), [base]);
+  const codexConnected = Boolean(codexAuth?.authenticated || codexAuth?.status === 'authenticated' || codexAuth?.status === 'connected');
+  const codexAvailable = codexAuth?.available !== false;
+  const codexStatus = codexLoading
+    ? 'checking…'
+    : codexError
+      ? 'backend unavailable'
+      : codexConnected
+        ? 'Codex Pro connected'
+        : codexAvailable
+          ? 'sign-in needed'
+          : 'Codex CLI missing';
   return (
-    <section className="doc pixelPanel">
-      <h2><Settings size={20} /> Settings</h2>
-      <label htmlFor="apiBase">Symphony API base URL</label>
-      <div className="settingsRow">
-        <input id="apiBase" value={v} onChange={e => setV(e.target.value)} placeholder="Blank uses Vite proxy" />
-        <button className="button primary" onClick={() => saveBase(v)}>Save</button>
+    <section className="settingsStack">
+      <div className="doc pixelPanel settingsHero">
+        <div>
+          <p className="eyebrow">Runtime connection</p>
+          <h2><Settings size={20} /> Settings</h2>
+          <p className="subtle">Packaged desktop builds talk to the local Symphony backend at <code>127.0.0.1:4004</code>. Dev builds can leave this blank for the Vite proxy.</p>
+        </div>
+        <span className={`pill ${codexConnected ? 'active' : 'neutral'}`}><BrainCircuit size={14} /> {codexStatus}</span>
       </div>
-      <p className="subtle">Leave blank during Vite development so requests go through the existing proxy to <code>127.0.0.1:4004</code>.</p>
+
+      <div className="doc pixelPanel">
+        <h2><Server size={20} /> Symphony backend</h2>
+        <label htmlFor="apiBase">Symphony API base URL</label>
+        <div className="settingsRow">
+          <input id="apiBase" value={v} onChange={e => setV(e.target.value)} placeholder="Blank in dev; packaged app uses http://127.0.0.1:4004" />
+          <button className="button primary" onClick={() => saveBase(v)}>Save</button>
+          <button className="button secondary" onClick={() => { setV('http://127.0.0.1:4004'); saveBase('http://127.0.0.1:4004'); }}>Use local backend</button>
+        </div>
+        <p className="subtle">Current base: <code>{base || 'same-origin Vite proxy / awaiting Tauri default'}</code></p>
+      </div>
+
+      <div className="doc pixelPanel codexConnectPanel">
+        <div className="panelHeader">
+          <div>
+            <p className="eyebrow">Agent spawning</p>
+            <h2><BrainCircuit size={20} /> Connect ChatGPT Codex Pro</h2>
+          </div>
+          <span className={`pill ${codexConnected ? 'active' : codexAvailable ? 'neutral' : 'danger'}`}>{codexStatus}</span>
+        </div>
+        <p className="subtle">Symphony uses the local Codex CLI OAuth/session. Tokens stay owned by the Codex CLI; Symphony only checks sanitized status and asks the CLI to start login/logout.</p>
+        <div className="codexStatusGrid">
+          <div><span>CLI available</span><b>{codexAvailable ? 'yes' : 'no'}</b></div>
+          <div><span>Authenticated</span><b>{codexConnected ? 'yes' : 'no'}</b></div>
+          <div><span>Version</span><b>{String(codexAuth?.version || 'unknown')}</b></div>
+          <div><span>Command</span><b>{String(codexAuth?.command || 'codex')}</b></div>
+        </div>
+        {codexError && <p className="formError">{codexError}</p>}
+        {codexAuth?.message && <p className="subtle">{String(codexAuth.message)}</p>}
+        {codexAuth?.login_command && <div className="targetPreview"><b>If a browser did not open, run:</b><code>{String(codexAuth.login_command)}</code></div>}
+        <div className="formActions">
+          <button className="button primary" disabled={codexBusy} onClick={onStartCodexLogin}><BrainCircuit size={15} /> Connect Codex Pro</button>
+          <button className="button secondary" disabled={codexBusy} onClick={onCheckCodex}><RefreshCw size={15} /> Check connection</button>
+          <button className="button danger" disabled={codexBusy} onClick={onLogoutCodex}>Disconnect</button>
+        </div>
+        <p className="subtle">After connecting, create Agent profiles and Symphony will launch real Codex-backed workers using your local Codex Pro session.</p>
+      </div>
     </section>
   );
 }
