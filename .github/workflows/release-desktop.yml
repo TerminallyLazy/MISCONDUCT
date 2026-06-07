@@ -20,14 +20,17 @@ jobs:
             os: macos-14
             rust-targets: aarch64-apple-darwin
             args: --target aarch64-apple-darwin
+            bundles: dmg
           - label: windows-x86_64
             os: windows-latest
             rust-targets: x86_64-pc-windows-msvc
             args: --target x86_64-pc-windows-msvc
+            bundles: nsis
           - label: linux-x86_64
             os: ubuntu-22.04
             rust-targets: x86_64-unknown-linux-gnu
             args: --target x86_64-unknown-linux-gnu
+            bundles: appimage,deb
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -134,12 +137,21 @@ jobs:
           if [ -d src-tauri/icons/icon.iconset ]; then
             iconutil -c icns src-tauri/icons/icon.iconset -o src-tauri/icons/icon.icns
           fi
-      - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+      - name: Build Tauri app (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: ${{ matrix.args }}
+          CI: 'true'
+        run: |
+          set -euxo pipefail
+          npm run tauri -- build ${{ matrix.args }} --bundles ${{ matrix.bundles }}
+      - name: Build Tauri app (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CI: 'true'
+        run: |
+          npm run tauri -- build ${{ matrix.args }} --bundles ${{ matrix.bundles }}
       - name: Verify bundled backend files exist
         shell: bash
         run: |
