@@ -38,6 +38,6 @@ Symphony uses the Codex CLI as the OAuth/session owner for ChatGPT/Codex Pro. Th
 
 ## Release automation note
 
-A cross-platform GitHub Actions workflow has been prepared locally, but publishing workflow files requires a GitHub token with the `workflow` scope. The initial repository push intentionally omits `.github/workflows/release-desktop.yml` because the available token cannot create workflow files.
+The cross-platform GitHub Actions workflow is now included at `.github/workflows/release-desktop.yml`. It builds downloadable macOS, Windows, Linux x86_64, and Linux ARM64 desktop artifacts from release tags.
 
 Current downloadable assets are published on the GitHub Release page.
