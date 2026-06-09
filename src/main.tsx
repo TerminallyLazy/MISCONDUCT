@@ -485,7 +485,12 @@ function useAgentOrchestra({ enabled, cards, idleMusicians, offline }: { enabled
     cardsRef.current = cards;
     idleRef.current = idleMusicians;
     offlineRef.current = offline;
-    setAudioState(prev => ({ ...prev, enabled, activeVoices: orchestraVoiceCount(cards, idleMusicians, offline) }));
+    const activeVoices = orchestraVoiceCount(cards, idleMusicians, offline);
+    setAudioState(prev => (
+      prev.enabled === enabled && prev.activeVoices === activeVoices
+        ? prev
+        : { ...prev, enabled, activeVoices }
+    ));
   }, [cards, idleMusicians, enabled, offline]);
 
   useEffect(() => {
@@ -493,7 +498,12 @@ function useAgentOrchestra({ enabled, cards, idleMusicians, offline }: { enabled
       if (masterRef.current && ctxRef.current) masterRef.current.gain.linearRampToValueAtTime(0.0001, ctxRef.current.currentTime + 0.25);
       if (timerRef.current) window.clearInterval(timerRef.current);
       timerRef.current = null;
-      setAudioState(prev => ({ ...prev, enabled: false, ready: Boolean(ctxRef.current), activeVoices: 0 }));
+      const ready = Boolean(ctxRef.current);
+      setAudioState(prev => (
+        !prev.enabled && prev.ready === ready && prev.activeVoices === 0
+          ? prev
+          : { ...prev, enabled: false, ready, activeVoices: 0 }
+      ));
       return;
     }
 
@@ -1018,7 +1028,7 @@ function App() {
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const cards = useMemo(() => makeCardsFromKanban(kanban.data), [kanban.data]);
   const profilesPayload = profilesQuery.data;
-  const profiles = profilesPayload?.profiles || [];
+  const profiles = useMemo(() => profilesPayload?.profiles ?? [], [profilesPayload?.profiles]);
   const idleMusicians = useMemo(() => makeIdleMusicians(profiles, cards), [profiles, cards]);
   const hasLiveBackendData = Boolean(state.data && kanban.data);
   const hasPollingError = state.isError || kanban.isError;
@@ -1603,15 +1613,21 @@ function OrchestraFloor({
         <div className="stageBackdrop" aria-hidden="true">
           <div className="operaCurtain curtainLeft" />
           <div className="operaCurtain curtainRight" />
+          <div className="footlights" />
           <div className="backWall">
+            <span className="hallVault" />
             <span className="goldColumn columnLeft" />
             <span className="goldColumn columnRight" />
+            <span className="sideBox sideBoxLeft"><i /><i /></span>
+            <span className="sideBox sideBoxRight"><i /><i /></span>
+            <span className="organLoft"><i /><i /><i /><i /><i /><i /><i /></span>
             <span className="balcony balconyLeft"><i /><i /><i /></span>
             <span className="balcony balconyCenter"><i /><i /><i /><i /></span>
             <span className="balcony balconyRight"><i /><i /><i /></span>
-            <span className="prosceniumArch"><b>CODEX HALL</b><small>GRAND STAGE</small></span>
+            <span className="prosceniumArch"><b>CODEX HALL</b></span>
             <span className="chandelier"><i /><i /><i /><i /></span>
           </div>
+          <div className="stageApron" />
           <div className="stageFloor" />
           <div className="pitRail" />
         </div>
