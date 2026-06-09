@@ -25,6 +25,9 @@ defmodule Symphony.AgentProfileRegistryTest do
 
     assert profile["id"] == "violin-builder"
     assert profile["instrument_name"] == "Violin"
+    assert profile["stage_position"] == %{"section" => "strings", "seat" => "front-center"}
+    assert profile["music"]["motif"] == "Violin entrance"
+    assert profile["music"]["dynamic"] == "mezzo-piano"
     assert {:ok, [listed]} = AgentProfileRegistry.list(server)
     assert listed["name"] == "Violin Builder"
 
@@ -70,6 +73,26 @@ defmodule Symphony.AgentProfileRegistryTest do
     {:ok, reloaded} = AgentProfileRegistry.start_link(name: name2, config: config)
     assert {:ok, persisted} = AgentProfileRegistry.get("cello-builder", reloaded)
     assert persisted["name"] == "Cello Builder"
+  end
+
+  test "normalizes explicit stage placement and music references", %{server: server} do
+    assert {:ok, profile} =
+             AgentProfileRegistry.create(
+               %{
+                 "name" => "Horn Refiner",
+                 "role" => "Refiner",
+                 "section" => "Brass",
+                 "instrument_name" => "French Horn",
+                 "stage_position" => %{"section" => "brass", "seat" => "back-right"},
+                 "music" => %{"motif" => "Refiner ostinato", "dynamic" => "forte"}
+               },
+               server
+             )
+
+    assert profile["stage_position"] == %{"section" => "brass", "seat" => "back-right"}
+    assert profile["music"]["motif"] == "Refiner ostinato"
+    assert profile["music"]["dynamic"] == "forte"
+    assert profile["music"]["register"] == "lower-middle"
   end
 
   test "reload_config switches storage path and reloads profiles", %{
@@ -154,5 +177,8 @@ defmodule Symphony.AgentProfileRegistryTest do
     assert refiner["id"] == "workflow-refiner"
     assert judge["instrument_name"] == "Concert Grand"
     assert judge["capabilities"] == ["review", "safety"]
+    assert judge["stage_position"] == %{"section" => "piano", "seat" => "mid-center"}
+    assert judge["music"]["dynamic"] == "mezzo-piano"
+    assert refiner["stage_position"] == %{"section" => "brass", "seat" => "mid-right"}
   end
 end

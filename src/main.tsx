@@ -138,6 +138,17 @@ const AgentStorageSchema = z.object({ path: z.string().optional(), count: z.numb
 const AgentProfilesResponseSchema = z.object({ profiles: z.array(AgentProfileSchema).default([]), storage: AgentStorageSchema.optional(), count: z.number().optional() });
 type AgentProfile = z.infer<typeof AgentProfileSchema>;
 type AgentProfilesResponse = z.infer<typeof AgentProfilesResponseSchema>;
+type StagePosition = {
+  section?: string;
+  seat?: string;
+  x?: number;
+  y?: number;
+};
+type MusicProfile = {
+  motif?: string;
+  dynamic?: string;
+  register?: string;
+};
 type IdleMusician = {
   id: string;
   profile: AgentProfile;
@@ -145,6 +156,8 @@ type IdleMusician = {
   role: string;
   section: string;
   instrumentName: string;
+  music?: MusicProfile;
+  stagePosition?: StagePosition;
   status: 'idle' | 'disabled';
   movement: 'Intermission · Idle';
   intensity: 10;
@@ -224,12 +237,28 @@ type Card = {
   movement: string;
   instrumentName: string;
   section: string;
+  music?: MusicProfile;
+  stagePosition?: StagePosition;
   intensity: number;
   source: 'live';
   raw?: unknown;
 };
 
 const columns = ['Ready', 'In Progress', 'Human Review', 'Retry', 'Blocked', 'Done'];
+const orchestraSections = ['Strings', 'Woodwinds', 'Brass', 'Percussion', 'Piano', 'Bells'];
+const stageSeats = [
+  'front-left',
+  'front-center',
+  'front-right',
+  'mid-left',
+  'mid-center',
+  'mid-right',
+  'back-left',
+  'back-center',
+  'back-right'
+];
+const musicDynamics = ['piano', 'mezzo-piano', 'mezzo-forte', 'forte'];
+const musicRegisters = ['low', 'lower-middle', 'middle', 'upper-middle', 'high'];
 const nav: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'console', label: 'Console', icon: Command },
   { id: 'agents', label: 'Agents', icon: Bot },
@@ -335,7 +364,9 @@ function emptyAgentProfile(): AgentProfile {
     capabilities: [],
     max_concurrent_tasks: 1,
     status: 'idle',
-    current_assignments: []
+    current_assignments: [],
+    music: { motif: 'Solo entrance', dynamic: 'mezzo-piano', register: 'middle' },
+    stage_position: { section: 'strings', seat: 'front-center' }
   });
 }
 
@@ -351,6 +382,8 @@ function makeIdleMusicians(profiles: AgentProfile[], liveCards: Card[]): IdleMus
       role: profile.role,
       section: profile.section,
       instrumentName: profile.instrument_name,
+      music: musicProfile(profile.music),
+      stagePosition: stagePosition(profile.stage_position),
       status: profile.enabled ? 'idle' as const : 'disabled' as const,
       movement: 'Intermission · Idle' as const,
       intensity: 10 as const
@@ -564,7 +597,8 @@ function scheduleIdleVoice(ctx: AudioContext, out: AudioNode, musician: IdleMusi
     status: musician.status,
     agent: musician.agent,
     instrumentName: musician.instrumentName,
-    section: musician.section
+    section: musician.section,
+    music: musician.music
   });
   if (!shouldPlay(idleRhythmFor(spec.rhythm), step, index)) return;
   const seed = hashString(musician.id);
@@ -574,20 +608,38 @@ function scheduleIdleVoice(ctx: AudioContext, out: AudioNode, musician: IdleMusi
   playSynthNote(ctx, out, { time, freq: midiToFreq(midi), duration: spec.duration * 1.35, gain: spec.gain * 0.45, type: spec.type, filterHz: spec.filterHz, pan });
 }
 
-function synthSpec(voice: { column?: string; status: string; agent: string; instrumentName?: string; section?: string }) {
+type SynthSpec = { type: OscillatorType; octave: number; gain: number; duration: number; filterHz: number; rhythm: string };
+
+function synthSpec(voice: { column?: string; status: string; agent: string; instrumentName?: string; section?: string; music?: MusicProfile }) {
   const state = `${voice.column || ''} ${voice.status} ${voice.agent}`.toLowerCase();
   const instrument = `${voice.instrumentName || ''} ${voice.section || ''}`.toLowerCase();
-  if (state.includes('block') || state.includes('guardian')) return { type: 'triangle' as OscillatorType, octave: 2, gain: 0.026, duration: 0.7, filterHz: 420, rhythm: 'drone' };
-  if (state.includes('retry') || state.includes('backoff')) return { type: 'sawtooth' as OscillatorType, octave: 3, gain: 0.028, duration: 0.16, filterHz: 900, rhythm: 'retry' };
-  if (instrument.includes('timpani') || instrument.includes('percussion') || instrument.includes('drum')) return { type: 'sawtooth' as OscillatorType, octave: 2, gain: 0.026, duration: 0.18, filterHz: 760, rhythm: 'retry' };
-  if (instrument.includes('piano')) return { type: 'triangle' as OscillatorType, octave: 4, gain: 0.024, duration: 0.32, filterHz: 2400, rhythm: 'review' };
-  if (instrument.includes('horn') || instrument.includes('trumpet') || instrument.includes('brass')) return { type: 'triangle' as OscillatorType, octave: 3, gain: 0.021, duration: 0.48, filterHz: 1150, rhythm: 'sparse' };
-  if (instrument.includes('clarinet') || instrument.includes('oboe') || instrument.includes('flute') || instrument.includes('woodwind')) return { type: 'triangle' as OscillatorType, octave: 4, gain: 0.017, duration: 0.3, filterHz: 2100, rhythm: 'sparse' };
-  if (instrument.includes('glockenspiel') || instrument.includes('bell')) return { type: 'sine' as OscillatorType, octave: 5, gain: 0.022, duration: 0.38, filterHz: 6200, rhythm: 'cadence' };
-  if (state.includes('review') || state.includes('judge')) return { type: 'triangle' as OscillatorType, octave: 4, gain: 0.024, duration: 0.32, filterHz: 2400, rhythm: 'review' };
-  if (state.includes('done') || state.includes('finish')) return { type: 'sine' as OscillatorType, octave: 5, gain: 0.024, duration: 0.42, filterHz: 6000, rhythm: 'cadence' };
-  if (state.includes('progress') || state.includes('run') || state.includes('builder') || instrument.includes('violin') || instrument.includes('viola') || instrument.includes('strings')) return { type: 'square' as OscillatorType, octave: 4, gain: 0.022, duration: 0.13, filterHz: 1700, rhythm: 'arpeggio' };
-  return { type: 'sine' as OscillatorType, octave: 4, gain: 0.014, duration: 0.22, filterHz: 3000, rhythm: 'sparse' };
+  let spec: SynthSpec = { type: 'sine' as OscillatorType, octave: 4, gain: 0.014, duration: 0.22, filterHz: 3000, rhythm: 'sparse' };
+  if (state.includes('block') || state.includes('guardian')) spec = { type: 'triangle' as OscillatorType, octave: 2, gain: 0.026, duration: 0.7, filterHz: 420, rhythm: 'drone' };
+  else if (state.includes('retry') || state.includes('backoff')) spec = { type: 'sawtooth' as OscillatorType, octave: 3, gain: 0.028, duration: 0.16, filterHz: 900, rhythm: 'retry' };
+  else if (instrument.includes('timpani') || instrument.includes('percussion') || instrument.includes('drum')) spec = { type: 'sawtooth' as OscillatorType, octave: 2, gain: 0.026, duration: 0.18, filterHz: 760, rhythm: 'retry' };
+  else if (instrument.includes('piano')) spec = { type: 'triangle' as OscillatorType, octave: 4, gain: 0.024, duration: 0.32, filterHz: 2400, rhythm: 'review' };
+  else if (instrument.includes('horn') || instrument.includes('trumpet') || instrument.includes('brass')) spec = { type: 'triangle' as OscillatorType, octave: 3, gain: 0.021, duration: 0.48, filterHz: 1150, rhythm: 'sparse' };
+  else if (instrument.includes('clarinet') || instrument.includes('oboe') || instrument.includes('flute') || instrument.includes('woodwind')) spec = { type: 'triangle' as OscillatorType, octave: 4, gain: 0.017, duration: 0.3, filterHz: 2100, rhythm: 'sparse' };
+  else if (instrument.includes('glockenspiel') || instrument.includes('bell')) spec = { type: 'sine' as OscillatorType, octave: 5, gain: 0.022, duration: 0.38, filterHz: 6200, rhythm: 'cadence' };
+  else if (state.includes('review') || state.includes('judge')) spec = { type: 'triangle' as OscillatorType, octave: 4, gain: 0.024, duration: 0.32, filterHz: 2400, rhythm: 'review' };
+  else if (state.includes('done') || state.includes('finish')) spec = { type: 'sine' as OscillatorType, octave: 5, gain: 0.024, duration: 0.42, filterHz: 6000, rhythm: 'cadence' };
+  else if (state.includes('progress') || state.includes('run') || state.includes('builder') || instrument.includes('violin') || instrument.includes('viola') || instrument.includes('strings')) spec = { type: 'square' as OscillatorType, octave: 4, gain: 0.022, duration: 0.13, filterHz: 1700, rhythm: 'arpeggio' };
+  return applyMusicProfile(spec, voice.music);
+}
+
+function applyMusicProfile(spec: SynthSpec, music?: MusicProfile): SynthSpec {
+  if (!music) return spec;
+  const dynamicGain: Record<string, number> = { piano: 0.76, 'mezzo-piano': 0.9, 'mezzo-forte': 1.08, forte: 1.22 };
+  const registerShift: Record<string, number> = { low: -1, 'lower-middle': 0, middle: 0, 'upper-middle': 1, high: 1 };
+  const motif = (music.motif || '').toLowerCase();
+  const gain = spec.gain * (dynamicGain[music.dynamic || ''] || 1);
+  const octave = Math.round(clamp(spec.octave + (registerShift[music.register || ''] || 0), 2, 6));
+  let rhythm = spec.rhythm;
+  if (motif.includes('drone') || motif.includes('sustain')) rhythm = 'drone';
+  else if (motif.includes('pulse') || motif.includes('ostinato')) rhythm = 'arpeggio';
+  else if (motif.includes('cadenza') || motif.includes('finale')) rhythm = 'cadence';
+  else if (motif.includes('sparse')) rhythm = 'sparse';
+  return { ...spec, gain, octave, rhythm };
 }
 
 function idleRhythmFor(rhythm: string) {
@@ -646,6 +698,8 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
       const agent = assignedProfile?.name || stringField(rawRecord, 'agent_name') || liveAgentFor(normalizedColumn, status);
       const section = assignedProfile?.section || stringField(rawRecord, 'agent_section') || sectionFor(normalizedColumn, status, raw.labels);
       const instrumentName = assignedProfile?.instrument_name || stringField(rawRecord, 'instrument_name') || instrumentNameFor(section, agent, status);
+      const music = musicProfile(assignedProfile?.music);
+      const profileStagePosition = stagePosition(assignedProfile?.stage_position);
 
       return {
         id: `${column.id}-${backendId}`,
@@ -668,6 +722,8 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
         movement: movementFor(normalizedColumn, status),
         instrumentName,
         section,
+        music,
+        stagePosition: profileStagePosition,
         intensity: intensityFor(tokens, turns, priority),
         source: 'live' as const,
         raw
@@ -690,13 +746,48 @@ function agentProfileFromCard(raw: z.infer<typeof KanbanCardSchema>) {
     role: stringField(value, 'role') || 'Agent',
     status: stringField(value, 'status') || 'idle',
     section: stringField(value, 'section') || 'Strings',
-    instrument_name: stringField(value, 'instrument_name') || stringField(value, 'instrumentName') || 'Violin'
+    instrument_name: stringField(value, 'instrument_name') || stringField(value, 'instrumentName') || 'Violin',
+    music: value.music,
+    stage_position: value.stage_position || value.stagePosition
   };
 }
 
 function stringField(value: Record<string, unknown>, key: string) {
   const field = value[key];
   return typeof field === 'string' && field.trim() ? field : '';
+}
+
+function numberField(value: Record<string, unknown>, key: string) {
+  const field = value[key];
+  return typeof field === 'number' && Number.isFinite(field) ? field : undefined;
+}
+
+function musicProfile(value: unknown): MusicProfile | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const profile: MusicProfile = {};
+  const motif = stringField(record, 'motif');
+  const dynamic = stringField(record, 'dynamic');
+  const register = stringField(record, 'register');
+  if (motif) profile.motif = motif;
+  if (dynamic) profile.dynamic = dynamic;
+  if (register) profile.register = register;
+  return Object.keys(profile).length ? profile : undefined;
+}
+
+function stagePosition(value: unknown): StagePosition | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const position: StagePosition = {};
+  const section = stringField(record, 'section');
+  const seat = stringField(record, 'seat');
+  const x = numberField(record, 'x');
+  const y = numberField(record, 'y');
+  if (section) position.section = section;
+  if (seat) position.seat = seat;
+  if (x !== undefined) position.x = x;
+  if (y !== undefined) position.y = y;
+  return Object.keys(position).length ? position : undefined;
 }
 
 
@@ -1396,14 +1487,81 @@ const sectionStations: Record<string, StageStation> = {
   Bells: { column: 'Done', id: 'bells-active', label: 'Bells / Finale', kind: 'done', x: 86, y: 72 }
 };
 
+const sectionSeatAnchors: Record<string, { x: number; y: number }> = {
+  Strings: { x: 41, y: 65 },
+  Woodwinds: { x: 31, y: 54 },
+  Brass: { x: 68, y: 53 },
+  Percussion: { x: 77, y: 68 },
+  Piano: { x: 55, y: 61 },
+  Bells: { x: 86, y: 72 }
+};
+
+const stageSeatOffsets: Record<string, { x: number; y: number }> = {
+  'front-left': { x: -8, y: -2 },
+  'front-center': { x: 0, y: -4 },
+  'front-right': { x: 8, y: -2 },
+  'mid-left': { x: -6, y: 4 },
+  'mid-center': { x: 0, y: 4 },
+  'mid-right': { x: 6, y: 4 },
+  'back-left': { x: -7, y: 10 },
+  'back-center': { x: 0, y: 10 },
+  'back-right': { x: 7, y: 10 }
+};
+
 const renderedStations: StageStation[] = [
   ...stationMeta,
   ...Object.values(sectionStations).filter(station => !stationMeta.some(base => base.id === station.id))
 ];
 
 function stationForCard(card: Card) {
-  if (card.agentProfileId && sectionStations[card.section]) return sectionStations[card.section];
+  const section = displaySection(card.stagePosition?.section || card.section);
+  if (card.agentProfileId && sectionStations[section]) return sectionStations[section];
   return stationMeta.find(item => item.column === card.column) || stationMeta[0];
+}
+
+function displaySection(section?: string) {
+  const lower = String(section || '').toLowerCase();
+  if (lower.includes('timpani') || lower.includes('drum')) return 'Percussion';
+  const match = orchestraSections.find(item => item.toLowerCase() === String(section || '').toLowerCase());
+  return match || 'Strings';
+}
+
+function sectionClass(section?: string) {
+  return displaySection(section).toLowerCase();
+}
+
+function sectionSlug(section?: string) {
+  return displaySection(section).toLowerCase();
+}
+
+function defaultSeatForSection(section?: string) {
+  const seats: Record<string, string> = {
+    Strings: 'front-center',
+    Woodwinds: 'mid-left',
+    Brass: 'mid-right',
+    Percussion: 'back-right',
+    Piano: 'mid-center',
+    Bells: 'back-center'
+  };
+  return seats[displaySection(section)] || 'front-center';
+}
+
+function stageSeatCoordinates(position: StagePosition | undefined, fallbackSection: string, index: number) {
+  const section = displaySection(position?.section || fallbackSection);
+  const anchor = sectionSeatAnchors[section] || sectionSeatAnchors.Strings;
+  const seatName = stageSeats.includes(String(position?.seat || '').toLowerCase())
+    ? String(position?.seat).toLowerCase()
+    : defaultSeatForSection(section);
+  const seat = stageSeatOffsets[seatName] || stageSeatOffsets[defaultSeatForSection(section)];
+  const rawX = position?.x ?? anchor.x + seat.x;
+  const rawY = position?.y ?? anchor.y + seat.y;
+  const offsetX = ((index % 3) - 1) * 2;
+  const offsetY = Math.floor(index % 6 / 3) * 3;
+  return { x: clamp(rawX + offsetX, 8, 92), y: clamp(rawY + offsetY, 31, 86) };
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function OrchestraFloor({
@@ -1585,6 +1743,9 @@ function PerformerCard({
 }) {
   const offsetX = ((index % 3) - 1) * 7;
   const offsetY = Math.floor(index % 6 / 3) * 9;
+  const seat = card.agentProfileId || card.stagePosition
+    ? stageSeatCoordinates(card.stagePosition, card.section, index)
+    : { x: station.x + offsetX, y: station.y + offsetY + 8 };
   const instrument = instrumentFor(card.agent, card.status, card.instrumentName);
   const status = statusClass(card.status);
   const chair = (hashString(card.backendId) % 4) + 1;
@@ -1592,11 +1753,11 @@ function PerformerCard({
   return (
     <article
       className={`performer performer-${status} ${selected ? 'selected' : ''}`}
-      style={{ left: `${station.x + offsetX}%`, top: `${station.y + offsetY + 8}%` }}
+      style={{ left: `${seat.x}%`, top: `${seat.y}%` }}
       onClick={onSelect}
     >
       <div className="performerShadow" />
-      <div className={`pixelPerson musician ${status} section-${card.section.toLowerCase()}`}><span className="head" /><span className="body" /><span className="legs" /><span className="instrument">{instrument}</span></div>
+      <div className={`pixelPerson musician ${status} section-${sectionClass(card.section)}`}><span className="head" /><span className="body" /><span className="legs" /><span className="instrument">{instrument}</span></div>
       <div className="musicNote">♪</div>
       <div className="openScore"><span /> <span /> <b>{card.movement.replace(' · ', ' ')}</b></div>
       <div className="taskSlip">
@@ -1617,11 +1778,11 @@ function PerformerCard({
 }
 
 function IdleMusicianCard({ musician, index }: { musician: IdleMusician; index: number }) {
-  const seat = idleSeatFor(musician.section, index);
+  const seat = idleSeatFor(musician.section, musician.stagePosition, index);
   return (
     <article className={`performer idlePerformer ${musician.status === 'disabled' ? 'disabled' : ''}`} style={{ left: `${seat.x}%`, top: `${seat.y}%` }}>
       <div className="performerShadow" />
-      <div className={`pixelPerson musician idle section-${musician.section.toLowerCase()}`}><span className="head" /><span className="body" /><span className="legs" /><span className="instrument">{instrumentFor(musician.agent, musician.status, musician.instrumentName)}</span></div>
+      <div className={`pixelPerson musician idle section-${sectionClass(musician.section)}`}><span className="head" /><span className="body" /><span className="legs" /><span className="instrument">{instrumentFor(musician.agent, musician.status, musician.instrumentName)}</span></div>
       <div className="taskSlip idleSlip">
         <span className="ticket">{musician.status.toUpperCase()}</span>
         <b>{musician.agent}</b>
@@ -1632,19 +1793,8 @@ function IdleMusicianCard({ musician, index }: { musician: IdleMusician; index: 
   );
 }
 
-function idleSeatFor(section: string, index: number) {
-  const seats: Record<string, { x: number; y: number }> = {
-    Strings: { x: 41, y: 65 },
-    Woodwinds: { x: 31, y: 54 },
-    Brass: { x: 68, y: 53 },
-    Percussion: { x: 77, y: 68 },
-    Piano: { x: 55, y: 61 },
-    Bells: { x: 86, y: 72 }
-  };
-  const seat = seats[section] || seats.Strings;
-  const offsetX = ((index % 3) - 1) * 4;
-  const offsetY = Math.floor(index / 3) * 5;
-  return { x: seat.x + offsetX, y: seat.y + offsetY };
+function idleSeatFor(section: string, position: StagePosition | undefined, index: number) {
+  return stageSeatCoordinates(position, section, index);
 }
 
 function FloatingNotes({ cards }: { cards: Card[] }) {
@@ -1887,6 +2037,30 @@ function AgentProfileForm({ profile, busy, onSave, onCancel, onDelete }: { profi
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { setDraft(profile || emptyAgentProfile()); setError(null); }, [profile]);
   const update = <K extends keyof AgentProfile>(key: K, value: AgentProfile[K]) => setDraft(prev => ({ ...prev, [key]: value }));
+  const draftStage = stagePosition(draft.stage_position) || { section: sectionSlug(draft.section), seat: defaultSeatForSection(draft.section) };
+  const draftMusic = musicProfile(draft.music) || { motif: '', dynamic: 'mezzo-piano', register: 'middle' };
+  const updateSection = (section: string) => setDraft(prev => {
+    const currentStage = stagePosition(prev.stage_position) || {};
+    const previousStageSection = sectionSlug(currentStage.section || prev.section);
+    const shouldFollowSection = !currentStage.section || previousStageSection === sectionSlug(prev.section);
+    return {
+      ...prev,
+      section,
+      stage_position: {
+        ...currentStage,
+        section: shouldFollowSection ? sectionSlug(section) : previousStageSection,
+        seat: shouldFollowSection ? defaultSeatForSection(section) : currentStage.seat || defaultSeatForSection(section)
+      }
+    };
+  });
+  const updateStage = (patch: StagePosition) => setDraft(prev => {
+    const current = stagePosition(prev.stage_position) || {};
+    return { ...prev, stage_position: { ...current, ...patch } };
+  });
+  const updateMusic = (patch: MusicProfile) => setDraft(prev => {
+    const current = musicProfile(prev.music) || {};
+    return { ...prev, music: { ...current, ...patch } };
+  });
   const submit = async () => {
     try {
       setError(null);
@@ -1904,8 +2078,13 @@ function AgentProfileForm({ profile, busy, onSave, onCancel, onDelete }: { profi
       <label>Name</label><input value={draft.name} onChange={e => update('name', e.target.value)} placeholder="Violin Builder" />
       <label>Role</label><input value={draft.role} onChange={e => update('role', e.target.value)} placeholder="developer, reviewer, security" />
       <label>Profile key</label><input value={draft.profile_key} onChange={e => update('profile_key', e.target.value)} placeholder="developer" />
-      <label>Section</label><select value={draft.section} onChange={e => update('section', e.target.value)}>{['Strings','Woodwinds','Brass','Percussion','Piano','Bells'].map(section => <option key={section}>{section}</option>)}</select>
+      <label>Section</label><select value={draft.section} onChange={e => updateSection(e.target.value)}>{orchestraSections.map(section => <option key={section}>{section}</option>)}</select>
       <label>Instrument</label><input value={draft.instrument_name} onChange={e => update('instrument_name', e.target.value)} placeholder="Violin" />
+      <label>Stage section</label><select value={sectionSlug(draftStage.section || draft.section)} onChange={e => updateStage({ section: e.target.value, seat: defaultSeatForSection(e.target.value) })}>{orchestraSections.map(section => <option key={section} value={sectionSlug(section)}>{section}</option>)}</select>
+      <label>Stage seat</label><select value={draftStage.seat || defaultSeatForSection(draftStage.section || draft.section)} onChange={e => updateStage({ seat: e.target.value })}>{stageSeats.map(seat => <option key={seat} value={seat}>{seat.replace('-', ' ')}</option>)}</select>
+      <label>Music motif</label><input value={draftMusic.motif || ''} onChange={e => updateMusic({ motif: e.target.value })} placeholder="Solo entrance" />
+      <label>Dynamic</label><select value={draftMusic.dynamic || 'mezzo-piano'} onChange={e => updateMusic({ dynamic: e.target.value })}>{musicDynamics.map(dynamic => <option key={dynamic}>{dynamic}</option>)}</select>
+      <label>Register</label><select value={draftMusic.register || 'middle'} onChange={e => updateMusic({ register: e.target.value })}>{musicRegisters.map(register => <option key={register}>{register.replace('-', ' ')}</option>)}</select>
       <label>Max concurrent tasks</label><input type="number" min="1" value={draft.max_concurrent_tasks} onChange={e => update('max_concurrent_tasks', Number(e.target.value || 1))} />
       <label>Model</label><input value={draft.model} onChange={e => update('model', e.target.value)} placeholder="optional" />
       <label>Workspace key</label><input value={draft.workspace_key} onChange={e => update('workspace_key', e.target.value)} placeholder="agent-builder" />

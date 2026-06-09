@@ -10,6 +10,14 @@ defmodule Symphony.AgentProfileRegistry do
     "Piano" => "Piano",
     "Bells" => "Glockenspiel"
   }
+  @default_stage_seats %{
+    "Strings" => "front-center",
+    "Woodwinds" => "mid-left",
+    "Brass" => "mid-right",
+    "Percussion" => "back-right",
+    "Piano" => "mid-center",
+    "Bells" => "back-center"
+  }
 
   def start_link(opts) do
     config = Keyword.fetch!(opts, :config)
@@ -248,6 +256,9 @@ defmodule Symphony.AgentProfileRegistry do
     id = blank_nil(forced_id) || blank_nil(attrs["id"]) || slug(name)
     workspace_key = attrs["workspace_key"] || attrs["workspaceKey"] || ""
 
+    instrument_name =
+      attrs["instrument_name"] || attrs["instrumentName"] || @default_instruments[section]
+
     cond do
       name == "" ->
         {:error, {:validation, "name is required"}}
@@ -272,8 +283,7 @@ defmodule Symphony.AgentProfileRegistry do
            "profile_key" =>
              attrs["profile_key"] || attrs["profileKey"] || attrs["role"] || "agent",
            "section" => section,
-           "instrument_name" =>
-             attrs["instrument_name"] || attrs["instrumentName"] || @default_instruments[section],
+           "instrument_name" => instrument_name,
            "enabled" => bool_or(attrs["enabled"], true),
            "description" => attrs["description"] |> string_or(""),
            "instructions" => attrs["instructions"] |> string_or(""),
@@ -286,8 +296,9 @@ defmodule Symphony.AgentProfileRegistry do
              int_or(attrs["max_concurrent_tasks"] || attrs["maxConcurrentTasks"], 1),
            "status" => if(bool_or(attrs["enabled"], true), do: "idle", else: "disabled"),
            "current_assignments" => [],
-           "music" => music(attrs["music"]),
-           "stage_position" => stage_position(attrs["stage_position"] || attrs["stagePosition"]),
+           "music" => music(attrs["music"], section, instrument_name),
+           "stage_position" =>
+             stage_position(attrs["stage_position"] || attrs["stagePosition"], section),
            "created_at" => attrs["created_at"] || now,
            "updated_at" => now
          }}
@@ -296,11 +307,36 @@ defmodule Symphony.AgentProfileRegistry do
 
   defp normalize(_, _), do: {:error, {:validation, "profile must be an object"}}
 
-  defp music(raw) when is_map(raw), do: stringify(raw)
-  defp music(_), do: %{}
+  defp music(raw, section, instrument_name) do
+    raw = if is_map(raw), do: stringify(raw), else: %{}
+    motif = "#{instrument_name} entrance"
 
-  defp stage_position(raw) when is_map(raw), do: stringify(raw)
-  defp stage_position(_), do: %{}
+    raw
+    |> put_blank_default("motif", motif)
+    |> put_blank_default("dynamic", "mezzo-piano")
+    |> put_blank_default("register", default_register(section))
+  end
+
+  defp stage_position(raw, section) do
+    raw = if is_map(raw), do: stringify(raw), else: %{}
+
+    raw
+    |> put_blank_default("section", section_slug(section))
+    |> put_blank_default("seat", @default_stage_seats[section] || "front-center")
+  end
+
+  defp put_blank_default(map, key, default) do
+    case Map.get(map, key) do
+      value when is_binary(value) ->
+        if String.trim(value) == "", do: Map.put(map, key, default), else: map
+
+      nil ->
+        Map.put(map, key, default)
+
+      _ ->
+        map
+    end
+  end
 
   defp policy(raw) when is_map(raw) do
     raw = stringify(raw)
@@ -350,6 +386,16 @@ defmodule Symphony.AgentProfileRegistry do
     section = string_or(section, "Strings")
     if section in @default_sections, do: section, else: "Strings"
   end
+
+  defp section_slug(section) do
+    section
+    |> known_section()
+    |> String.downcase()
+  end
+
+  defp default_register(section) when section in ["Brass", "Percussion"], do: "lower-middle"
+  defp default_register(section) when section in ["Bells"], do: "high"
+  defp default_register(_section), do: "middle"
 
   defp writable?(path) do
     File.mkdir_p!(Path.dirname(path))
