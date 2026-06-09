@@ -486,6 +486,8 @@ textarea.tall { min-height: 150px; }
 .workflowTemplateCard span { font-size: 10px; text-transform: uppercase; color: #8a5b29; }
 .workflowFieldGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .workflowAssignmentGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.assignmentWarnings { border: 3px solid #8e4a23; background: #fff2c7; color: #5b3018; padding: 8px 10px; margin: 0 0 10px; font-size: 12px; font-weight: 800; }
+.assignmentWarnings p { margin: 4px 0; }
 .workflowComposer label, .workflowInspector label { display: grid; gap: 6px; font-size: 11px; font-weight: 900; text-transform: uppercase; color: #75502a; margin-bottom: 10px; }
 .workflowEditor { min-height: 390px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.45; white-space: pre; }
 .targetPreview { display: grid; gap: 6px; border: 3px solid var(--ink); background: #f4dfb4; padding: 10px; margin-bottom: 12px; }

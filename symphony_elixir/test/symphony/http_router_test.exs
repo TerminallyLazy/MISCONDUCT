@@ -291,6 +291,101 @@ defmodule Symphony.Http.RouterTest do
     assert generated["content"] =~ "seat: \"front-right\""
   end
 
+  test "workflow generation flags a missing selected role profile" do
+    missing_profile = "missing-builder-#{System.unique_integer([:positive])}"
+
+    conn =
+      conn(
+        :post,
+        "/api/workflows/generate",
+        Jason.encode!(%{
+          template_id: "linear_codex_judge_refiner",
+          overrides: %{
+            name: "router-missing-builder",
+            objective: "Catch a missing selected builder.",
+            builder_profile: missing_profile
+          }
+        })
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 200
+    generated = Jason.decode!(conn.resp_body)
+    generated_ids = Enum.map(generated["agent_profiles"], & &1["id"])
+    refute missing_profile in generated_ids
+    assert generated["content"] =~ "profile: #{inspect(missing_profile)}"
+
+    dispatch_errors = get_in(generated, ["validation", "dispatch", "errors"]) || []
+    assert Enum.any?(dispatch_errors, &String.contains?(&1, "profile #{missing_profile}"))
+    assert generated["validation"]["valid"] == false
+    assert generated["review"]["verdict"] == "needs_refinement"
+
+    assert Enum.any?(
+             generated["review"]["judge"]["findings"],
+             &String.contains?(&1, missing_profile)
+           )
+  end
+
+  test "workflow generation flags a disabled selected role profile" do
+    name = "Disabled Builder #{System.unique_integer([:positive])}"
+
+    conn =
+      conn(
+        :post,
+        "/api/agents",
+        Jason.encode!(%{
+          name: name,
+          role: "Builder",
+          profile_key: "disabled-builder",
+          section: "Strings",
+          instrument_name: "Violin",
+          enabled: false
+        })
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 201
+    profile = Jason.decode!(conn.resp_body)["profile"]
+
+    conn =
+      conn(
+        :post,
+        "/api/workflows/generate",
+        Jason.encode!(%{
+          template_id: "linear_codex_judge_refiner",
+          overrides: %{
+            name: "router-disabled-builder",
+            objective: "Catch a disabled selected builder.",
+            builder_profile: profile["id"]
+          }
+        })
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 200
+    generated = Jason.decode!(conn.resp_body)
+    assert generated["content"] =~ "profile: #{inspect(profile["id"])}"
+    assert generated["content"] =~ "enabled: \"false\""
+
+    dispatch_errors = get_in(generated, ["validation", "dispatch", "errors"]) || []
+
+    assert Enum.any?(
+             dispatch_errors,
+             &String.contains?(&1, "profile #{profile["id"]} is disabled")
+           )
+
+    assert generated["validation"]["valid"] == false
+    assert generated["review"]["verdict"] == "needs_refinement"
+
+    assert Enum.any?(
+             generated["review"]["judge"]["findings"],
+             &String.contains?(&1, profile["id"])
+           )
+  end
+
   test "workflow judge flags missing judge and refiner metadata" do
     content = """
     ---

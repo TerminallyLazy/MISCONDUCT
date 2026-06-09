@@ -2120,6 +2120,19 @@ function WorkflowPanel({ base, state, cards, profiles, enabled }: { base: string
   const selectedTemplate = templatesQuery.data?.find(t => t.id === templateId) || templatesQuery.data?.[0];
   const enabledProfiles = profiles.filter(profile => profile.enabled);
   const usesValidator = templateId === 'repository_orchestra';
+  const assignmentSelections = [
+    { role: 'Generator', id: generatorProfileId },
+    { role: 'Builder', id: builderProfileId },
+    { role: 'Judge', id: judgeProfileId },
+    { role: 'Refiner', id: refinerProfileId },
+    ...(usesValidator ? [{ role: 'Validator', id: validatorProfileId }] : [])
+  ].filter(selection => selection.id);
+  const assignmentIssues = assignmentSelections.flatMap(selection => {
+    const profile = profiles.find(item => item.id === selection.id);
+    if (!profile) return [`${selection.role} profile is no longer available.`];
+    if (!profile.enabled) return [`${selection.role} profile ${profile.name} is disabled.`];
+    return [];
+  });
   const workflowOverrides = () => Object.fromEntries(
     Object.entries({
       name,
@@ -2249,8 +2262,9 @@ function WorkflowPanel({ base, state, cards, profiles, enabled }: { base: string
           <ProfileSelect label="Refiner" value={refinerProfileId} onChange={setRefinerProfileId} profiles={enabledProfiles} />
           {usesValidator && <ProfileSelect label="Validator" value={validatorProfileId} onChange={setValidatorProfileId} profiles={enabledProfiles} />}
         </div>
+        {assignmentIssues.length > 0 && <div className="assignmentWarnings">{assignmentIssues.map(issue => <p key={issue}>{issue}</p>)}</div>}
         <div className="formActions">
-          <button className="button primary" disabled={busy} onClick={() => generate.mutate()}><Music2 size={15} />Generate</button>
+          <button className="button primary" disabled={busy || assignmentIssues.length > 0} onClick={() => generate.mutate()}><Music2 size={15} />Generate</button>
           <button className="button secondary" title={!draft ? 'Generate or paste WORKFLOW.md content first.' : 'Run backend workflow validation/judge.'} disabled={busy || !draft} onClick={() => validateDraft.mutate()}>Judge</button>
           <button className="button secondary" disabled={busy || !draft} onClick={() => previewDraft.mutate()}>Preview</button>
         </div>

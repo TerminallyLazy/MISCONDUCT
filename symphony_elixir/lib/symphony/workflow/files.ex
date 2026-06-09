@@ -713,6 +713,7 @@ defmodule Symphony.Workflow.Files do
         "instrument_name" => instrument,
         "description" => raw["description"] || "",
         "instructions" => raw["instructions"] || "",
+        "enabled" => Map.get(raw, "enabled", true),
         "capabilities" => list_strings(raw["capabilities"]),
         "music" =>
           Map.merge(music, %{
@@ -733,11 +734,11 @@ defmodule Symphony.Workflow.Files do
     overrides = stringify(overrides || %{})
 
     profiles
-    |> Enum.map(fn profile ->
+    |> Enum.flat_map(fn profile ->
       role = profile["role"] |> to_string() |> String.downcase()
 
       case selected_profile_id(overrides, role) do
-        nil -> profile
+        nil -> [profile]
         id -> selected_stage_profile(id, profile)
       end
     end)
@@ -749,16 +750,15 @@ defmodule Symphony.Workflow.Files do
       {:ok, profile} ->
         profile = stringify(profile)
 
-        fallback
-        |> Map.merge(profile)
-        |> Map.put("id", id)
-        |> Map.put("profile_key", profile["profile_key"] || id)
+        [
+          fallback
+          |> Map.merge(profile)
+          |> Map.put("id", id)
+          |> Map.put("profile_key", profile["profile_key"] || id)
+        ]
 
       _ ->
-        fallback
-        |> Map.put("id", id)
-        |> Map.put("profile_key", id)
-        |> Map.put("name", humanize(id))
+        []
     end
   end
 
@@ -811,12 +811,14 @@ defmodule Symphony.Workflow.Files do
   defp stage_agent_yaml(profile) do
     music = profile["music"] || %{}
     stage = profile["stage_position"] || %{}
+    enabled = Map.get(profile, "enabled", true)
 
     """
       - profile: #{yaml(profile["id"])}
         name: #{yaml(profile["name"])}
         role: #{yaml(profile["role"])}
         profile_key: #{yaml(profile["profile_key"])}
+        enabled: #{yaml(enabled)}
         section: #{yaml(profile["section"])}
         instrument: #{yaml(profile["instrument_name"])}
         description: #{yaml(profile["description"])}
@@ -893,7 +895,9 @@ defmodule Symphony.Workflow.Files do
         {:error, [:parse_failed]}
       end
 
-    dispatch_errors = dispatch_errors(dispatch)
+    profile_errors = if(wf, do: profile_activation_errors(wf.config), else: [])
+    dispatch_errors = dispatch_errors(dispatch) ++ profile_errors
+    dispatch_ok = dispatch == :ok and profile_errors == []
 
     %{
       ok: true,
@@ -902,7 +906,7 @@ defmodule Symphony.Workflow.Files do
       errors: errors,
       warnings: warnings,
       parse: %{ok: match?({:ok, _}, parse)},
-      dispatch: %{ok: dispatch == :ok, errors: dispatch_errors},
+      dispatch: %{ok: dispatch_ok, errors: dispatch_errors},
       metadata: if(wf, do: metadata(wf), else: %{}),
       content_sha256: sha256(content)
     }
@@ -952,20 +956,88 @@ defmodule Symphony.Workflow.Files do
   defp dispatch_errors({:error, errors}) when is_list(errors), do: Enum.map(errors, &inspect/1)
   defp dispatch_errors({:error, reason}), do: [inspect(reason)]
 
+  defp profile_activation_errors(config) when is_map(config) do
+    config = stringify(config)
+
+    ["generator", "builder", "judge", "refiner", "validator"]
+    |> Enum.flat_map(fn role ->
+      role_config = config |> Map.get(role, %{}) |> map_or_empty() |> stringify()
+
+      case role_config["profile"] do
+        profile_id when is_binary(profile_id) and profile_id != "" ->
+          profile_ref_errors(config, role, profile_id)
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp profile_activation_errors(_), do: []
+
+  defp profile_ref_errors(config, role, profile_id) do
+    case registry_profile(profile_id) do
+      {:ok, profile} ->
+        if profile_enabled?(profile["enabled"]) do
+          []
+        else
+          ["workflow #{role} profile #{profile_id} is disabled"]
+        end
+
+      {:error, _} ->
+        case stage_agent(config, profile_id) do
+          nil ->
+            ["workflow #{role} profile #{profile_id} is not configured"]
+
+          stage_profile ->
+            if profile_enabled?(stage_profile["enabled"]) do
+              []
+            else
+              ["workflow #{role} profile #{profile_id} is disabled"]
+            end
+        end
+    end
+  end
+
+  defp stage_agent(config, profile_id) do
+    config
+    |> Map.get("stage_agents", [])
+    |> case do
+      agents when is_list(agents) -> agents
+      _ -> []
+    end
+    |> Enum.find(fn raw ->
+      raw = raw |> map_or_empty() |> stringify()
+      (raw["profile"] || raw["id"] || raw["profile_key"]) == profile_id
+    end)
+    |> case do
+      nil -> nil
+      raw -> stringify(raw)
+    end
+  end
+
   defp review_content(_content, validation) do
-    score = max(0, 100 - length(validation.errors) * 30 - length(validation.warnings) * 5)
+    activation_errors = get_in(validation, [:dispatch, :errors]) || []
+
+    score =
+      max(
+        0,
+        100 - length(validation.errors) * 30 - length(validation.warnings) * 5 -
+          length(activation_errors) * 20
+      )
 
     %{
       verdict:
         cond do
           validation.errors != [] -> "blocked"
+          activation_errors != [] -> "needs_refinement"
           validation.warnings != [] -> "needs_refinement"
           true -> "pass"
         end,
       score: score,
       judge: %{
         provider: "Symphony.Workflow.Files",
-        findings: validation.errors,
+        findings: validation.errors ++ activation_errors,
         warnings: validation.warnings,
         safe_to_save: validation.errors == [],
         safe_to_activate: validation.valid
@@ -977,6 +1049,10 @@ defmodule Symphony.Workflow.Files do
       }
     }
   end
+
+  defp refiner_summary(%{dispatch: %{errors: activation_errors}})
+       when activation_errors != [],
+       do: "Resolve activation errors before activation."
 
   defp refiner_summary(%{errors: [], warnings: []}), do: "No refinement required."
 
@@ -1178,6 +1254,17 @@ defmodule Symphony.Workflow.Files do
         (default and String.downcase(v) not in ["false", "0", "no"])
 
   defp bool(_, default), do: default
+  defp profile_enabled?(nil), do: true
+  defp profile_enabled?(false), do: false
+  defp profile_enabled?(0), do: false
+
+  defp profile_enabled?(value) when is_binary(value) do
+    normalized = value |> String.trim() |> String.downcase()
+    normalized not in ["false", "0", "no", "disabled"]
+  end
+
+  defp profile_enabled?(_), do: true
+
   defp present?(v), do: is_binary(v) and String.trim(v) != ""
   defp sha256(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
   defp short_hash(content), do: sha256(content) |> binary_part(0, 12)
