@@ -22,6 +22,10 @@ defmodule Symphony.Codex.AuthTest do
         echo "codex-cli 9.9.9"
         exit 0
       fi
+      if [ "$1" = "login" ] && [ "$2" = "status" ]; then
+        echo "Logged in using ChatGPT as user@example.test bearer=secret-token"
+        exit 0
+      fi
       if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
         echo "Logged in using ChatGPT as user@example.test bearer=secret-token"
         exit 0
@@ -83,6 +87,10 @@ defmodule Symphony.Codex.AuthTest do
         echo "Device auth started at https://example.test/?code=secret"
         exit 0
       fi
+      if [ "$1" = "login" ] && [ "$2" = "status" ]; then
+        echo "Logged in using ChatGPT"
+        exit 0
+      fi
       if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
         echo "Logged in using ChatGPT"
         exit 0
@@ -98,6 +106,76 @@ defmodule Symphony.Codex.AuthTest do
     assert payload.output =~ "[REDACTED_URL]"
     assert File.read!(args_path) == "login --device-auth\n"
     assert payload.status.cli_available == true
+  end
+
+  test "status parses quoted command paths and preserves global codex flags", %{dir: dir} do
+    bin_dir = Path.join(dir, "Codex CLI")
+    File.mkdir_p!(bin_dir)
+    calls_path = Path.join(dir, "calls.txt")
+
+    cli =
+      write_cli!(bin_dir, "codex-profile", """
+      #!/bin/sh
+      printf "%s\\n" "$*" >> "#{calls_path}"
+      if [ "$1" = "--profile" ] && [ "$2" = "work" ] && [ "$3" = "--version" ]; then
+        echo "codex-cli 9.9.9"
+        exit 0
+      fi
+      if [ "$1" = "--profile" ] && [ "$2" = "work" ] && [ "$3" = "login" ] && [ "$4" = "status" ]; then
+        echo "Logged in using ChatGPT as profile@example.test"
+        exit 0
+      fi
+      exit 1
+      """)
+
+    command = "'#{cli}' --profile work app-server --port 4700"
+    status = Auth.status(%Config{codex_command: command})
+
+    assert status.available == true
+    assert status.authenticated == true
+    assert status.account_label == "profile@example.test"
+    assert status.login_command == "'#{cli}' --profile work login --device-auth"
+
+    calls = File.read!(calls_path)
+    assert calls =~ "--profile work --version"
+    assert calls =~ "--profile work login status"
+    refute calls =~ "app-server"
+    refute calls =~ "--port 4700"
+  end
+
+  test "login start preserves global flags and strips app-server runtime args", %{dir: dir} do
+    bin_dir = Path.join(dir, "Codex CLI")
+    File.mkdir_p!(bin_dir)
+    args_path = Path.join(dir, "args.txt")
+
+    cli =
+      write_cli!(bin_dir, "codex-login-profile", """
+      #!/bin/sh
+      if [ "$1" = "--profile" ] && [ "$2" = "work" ] && [ "$3" = "--version" ]; then
+        echo "codex-cli 9.9.9"
+        exit 0
+      fi
+      if [ "$1" = "--profile" ] && [ "$2" = "work" ] && [ "$3" = "login" ] && [ "$4" = "--device-auth" ]; then
+        printf "%s\\n" "$*" > "#{args_path}"
+        echo "Device auth started at https://example.test/?code=secret"
+        exit 0
+      fi
+      if [ "$1" = "--profile" ] && [ "$2" = "work" ] && [ "$3" = "login" ] && [ "$4" = "status" ]; then
+        echo "Logged in using ChatGPT"
+        exit 0
+      fi
+      exit 1
+      """)
+
+    command = "'#{cli}' --profile work app-server --port 4700"
+    assert {:ok, payload} = Auth.login_start(%Config{codex_command: command})
+
+    assert payload.ok
+    assert payload.state == "login_completed_or_pending"
+    assert payload.login_command == "'#{cli}' --profile work login --device-auth"
+    assert File.read!(args_path) == "--profile work login --device-auth\n"
+    refute payload.login_command =~ "app-server"
+    refute payload.login_command =~ "--port"
   end
 
   defp write_cli!(dir, name, body) do

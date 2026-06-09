@@ -11,9 +11,10 @@ defmodule Symphony.Codex.Auth do
 
   def status(config \\ nil) do
     command = codex_command(config)
-    exe = executable(command)
+    spec = command_spec(command)
+    exe = spec.executable
     now = DateTime.utc_now()
-    login_command = manual_login_command(command)
+    login_command = manual_login_command(spec)
 
     cond do
       is_nil(exe) ->
@@ -38,8 +39,8 @@ defmodule Symphony.Codex.Auth do
         }
 
       true ->
-        version = version(exe)
-        auth = auth_probe(exe)
+        version = version(spec)
+        auth = auth_probe(spec)
 
         %{
           ok: true,
@@ -68,15 +69,16 @@ defmodule Symphony.Codex.Auth do
 
   def login_start(config \\ nil) do
     command = codex_command(config)
+    spec = command_spec(command)
 
-    case executable(command) do
+    case spec.executable do
       nil ->
         {:error, :codex_cli_missing}
 
-      exe ->
-        login_command = manual_login_command(command)
+      _exe ->
+        login_command = manual_login_command(spec)
 
-        case run_cli(exe, ["login", "--device-auth"], 12_000) do
+        case run_cli(spec, ["login", "--device-auth"], 12_000) do
           {0, out} ->
             {:ok,
              %{
@@ -111,13 +113,14 @@ defmodule Symphony.Codex.Auth do
 
   def logout(config \\ nil) do
     command = codex_command(config)
+    spec = command_spec(command)
 
-    case executable(command) do
+    case spec.executable do
       nil ->
         {:error, :codex_cli_missing}
 
-      exe ->
-        {code, out} = run_cli(exe, ["logout"], 30_000)
+      _exe ->
+        {code, out} = run_cli(spec, ["logout"], 30_000)
 
         {:ok,
          %{
@@ -172,20 +175,47 @@ defmodule Symphony.Codex.Auth do
     end
   end
 
-  defp executable(command) do
-    command
-    |> String.split(~r/\s+/, parts: 2)
-    |> hd()
-    |> System.find_executable()
+  defp command_spec(command) do
+    parts =
+      command
+      |> command_parts()
+      |> case do
+        [] -> ["codex"]
+        parts -> parts
+      end
+
+    executable_name = hd(parts)
+    args = tl(parts)
+
+    %{
+      executable_name: executable_name,
+      executable: System.find_executable(executable_name),
+      global_args: global_args(args)
+    }
   end
 
-  defp manual_login_command(command) do
-    executable =
+  defp command_parts(command) do
+    command
+    |> OptionParser.split()
+  rescue
+    _ ->
       command
-      |> String.split(~r/\s+/, parts: 2)
-      |> hd()
+      |> String.split(~r/\s+/, trim: true)
+  end
 
-    "#{shell_quote(executable)} login --device-auth"
+  defp global_args(args) do
+    case Enum.split_while(args, &(&1 != "app-server")) do
+      {global, ["app-server" | _runtime_args]} -> global
+      {global, []} -> global
+    end
+  end
+
+  defp manual_login_command(spec) do
+    args = [spec.executable_name | spec.global_args ++ ["login", "--device-auth"]]
+
+    args
+    |> Enum.map(&shell_quote/1)
+    |> Enum.join(" ")
   end
 
   defp shell_quote(value) do
@@ -198,10 +228,10 @@ defmodule Symphony.Codex.Auth do
     end
   end
 
-  defp version(exe) do
+  defp version(spec) do
     [["--version"], ["version"], ["-V"]]
     |> Enum.reduce_while(nil, fn args, _acc ->
-      case run_cli(exe, args, @default_timeout) do
+      case run_cli(spec, args, @default_timeout) do
         {0, out} ->
           text = out |> redact() |> String.trim()
           if text == "", do: {:cont, nil}, else: {:halt, text}
@@ -216,8 +246,8 @@ defmodule Symphony.Codex.Auth do
     end) || "installed"
   end
 
-  defp auth_probe(exe) do
-    cli_probe(exe) || file_probe() ||
+  defp auth_probe(spec) do
+    cli_probe(spec) || file_probe() ||
       %{
         connected: false,
         state: "unknown",
@@ -227,11 +257,11 @@ defmodule Symphony.Codex.Auth do
       }
   end
 
-  defp cli_probe(exe) do
-    probes = [["auth", "status"], ["login", "status"], ["status"], ["whoami"], ["account"]]
+  defp cli_probe(spec) do
+    probes = [["login", "status"], ["auth", "status"], ["status"], ["whoami"], ["account"]]
 
     Enum.reduce_while(probes, nil, fn args, _acc ->
-      case run_cli(exe, args, @default_timeout) do
+      case run_cli(spec, args, @default_timeout) do
         {0, out} ->
           auth = classify_auth(out)
           if auth.connected, do: {:halt, auth}, else: {:cont, nil}
@@ -329,11 +359,16 @@ defmodule Symphony.Codex.Auth do
     end
   end
 
-  defp run_cli(exe, args, timeout) do
+  defp run_cli(spec, args, timeout) do
     task =
       Task.async(fn ->
         try do
-          {out, code} = System.cmd(exe, args, stderr_to_stdout: true, env: env())
+          {out, code} =
+            System.cmd(spec.executable, spec.global_args ++ args,
+              stderr_to_stdout: true,
+              env: env()
+            )
+
           {code, out}
         rescue
           e -> {127, Exception.message(e)}
