@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serde::Serialize;
 use flate2::read::GzDecoder;
+use serde::Serialize;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tar::Archive;
-use tauri::{Manager, State};
+use tauri::{Manager, RunEvent, State};
 
 const PREFERRED_PORT: u16 = 4004;
 
@@ -149,7 +149,10 @@ fn archive_is_newer(archive: &Path, executable: &Path) -> bool {
     archive_modified > executable_modified
 }
 
-fn archive_source(app: &tauri::AppHandle, archive_path: PathBuf) -> Result<Option<BackendSource>, String> {
+fn archive_source(
+    app: &tauri::AppHandle,
+    archive_path: PathBuf,
+) -> Result<Option<BackendSource>, String> {
     if !archive_path.exists() {
         return Ok(None);
     }
@@ -252,7 +255,11 @@ fn append_log(path: &Path, line: &str) {
     }
 }
 
-fn spawn_pipe_reader<R: Read + Send + 'static>(mut reader: R, log_path: PathBuf, prefix: &'static str) {
+fn spawn_pipe_reader<R: Read + Send + 'static>(
+    mut reader: R,
+    log_path: PathBuf,
+    prefix: &'static str,
+) {
     thread::spawn(move || {
         let mut buf = [0_u8; 4096];
         loop {
@@ -304,7 +311,10 @@ fn backend_status(state: State<'_, BackendProcess>) -> BackendInfo {
 }
 
 #[tauri::command]
-fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>) -> Result<BackendInfo, String> {
+fn ensure_backend_ready(
+    app: tauri::AppHandle,
+    state: State<'_, BackendProcess>,
+) -> Result<BackendInfo, String> {
     if let Some(info) = state.info.lock().unwrap().clone() {
         if probe_health(info.port) {
             return Ok(status_from_state(&state));
@@ -329,9 +339,31 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
     fs::create_dir_all(&workspace_root).map_err(|e| e.to_string())?;
     let agent_profiles_path = app_data_dir.join("agent_profiles.json");
     let log_path = app_log_path(&app)?;
-    append_log(&log_path, &format!("--- starting {} on {} ---", backend_source.label(), base_url(port)));
-    append_log(&log_path, &format!("backend_dir={} launcher={}", backend_dir.display(), backend_source.launcher()));
-    append_log(&log_path, &format!("release_node={release_node} workflow_path={} workspace_root={} agent_profiles_path={}", workflow_path.display(), workspace_root.display(), agent_profiles_path.display()));
+    append_log(
+        &log_path,
+        &format!(
+            "--- starting {} on {} ---",
+            backend_source.label(),
+            base_url(port)
+        ),
+    );
+    append_log(
+        &log_path,
+        &format!(
+            "backend_dir={} launcher={}",
+            backend_dir.display(),
+            backend_source.launcher()
+        ),
+    );
+    append_log(
+        &log_path,
+        &format!(
+            "release_node={release_node} workflow_path={} workspace_root={} agent_profiles_path={}",
+            workflow_path.display(),
+            workspace_root.display(),
+            agent_profiles_path.display()
+        ),
+    );
 
     let mut command = backend_command(&backend_source);
 
@@ -344,9 +376,18 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
         .env("SYMPHONY_HTTP_HOST", "127.0.0.1")
         .env("SYMPHONY_HTTP_PORT", port.to_string())
         .env("PORT", port.to_string())
-        .env("SYMPHONY_WORKFLOW_PATH", workflow_path.to_string_lossy().to_string())
-        .env("SYMPHONY_WORKSPACE_ROOT", workspace_root.to_string_lossy().to_string())
-        .env("SYMPHONY_AGENT_PROFILES_PATH", agent_profiles_path.to_string_lossy().to_string())
+        .env(
+            "SYMPHONY_WORKFLOW_PATH",
+            workflow_path.to_string_lossy().to_string(),
+        )
+        .env(
+            "SYMPHONY_WORKSPACE_ROOT",
+            workspace_root.to_string_lossy().to_string(),
+        )
+        .env(
+            "SYMPHONY_AGENT_PROFILES_PATH",
+            agent_profiles_path.to_string_lossy().to_string(),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -379,7 +420,11 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
     });
 
     if !wait_for_health(port, Duration::from_secs(30)) {
-        let exit_note = match child_lock.as_mut().and_then(|child| child.try_wait().ok()).flatten() {
+        let exit_note = match child_lock
+            .as_mut()
+            .and_then(|child| child.try_wait().ok())
+            .flatten()
+        {
             Some(status) => format!(" Process exited early with status: {status}."),
             None => " Process is still running but health did not respond.".to_string(),
         };
@@ -402,7 +447,10 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
         return Err(msg);
     }
 
-    append_log(&log_path, &format!("--- {} healthy ---", backend_source.label()));
+    append_log(
+        &log_path,
+        &format!("--- {} healthy ---", backend_source.label()),
+    );
     Ok(status_from_state(&state))
 }
 
@@ -417,16 +465,25 @@ fn backend_stop(state: State<'_, BackendProcess>) -> BackendInfo {
 }
 
 #[tauri::command]
-fn backend_restart(app: tauri::AppHandle, state: State<'_, BackendProcess>) -> Result<BackendInfo, String> {
+fn backend_restart(
+    app: tauri::AppHandle,
+    state: State<'_, BackendProcess>,
+) -> Result<BackendInfo, String> {
     let _ = backend_stop(state.clone());
     ensure_backend_ready(app, state)
 }
 
 #[tauri::command]
-fn backend_logs(state: State<'_, BackendProcess>, max_bytes: Option<usize>) -> Result<BackendLogs, String> {
+fn backend_logs(
+    state: State<'_, BackendProcess>,
+    max_bytes: Option<usize>,
+) -> Result<BackendLogs, String> {
     let path = state.log_path.lock().unwrap().clone();
     let Some(path) = path else {
-        return Ok(BackendLogs { log_path: None, text: String::new() });
+        return Ok(BackendLogs {
+            log_path: None,
+            text: String::new(),
+        });
     };
     let bytes = fs::read(&path).map_err(|e| e.to_string())?;
     let max = max_bytes.unwrap_or(64 * 1024);
@@ -438,12 +495,15 @@ fn backend_logs(state: State<'_, BackendProcess>, max_bytes: Option<usize>) -> R
 }
 
 #[tauri::command]
-fn default_api_base_url(app: tauri::AppHandle, state: State<'_, BackendProcess>) -> Result<String, String> {
+fn default_api_base_url(
+    app: tauri::AppHandle,
+    state: State<'_, BackendProcess>,
+) -> Result<String, String> {
     Ok(ensure_backend_ready(app, state)?.base_url)
 }
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .manage(BackendProcess {
@@ -466,6 +526,13 @@ fn main() {
                 let _ = backend_stop(state);
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Symphony Console");
+        .build(tauri::generate_context!())
+        .expect("error while building Symphony Console");
+
+    app.run(|app_handle, event| {
+        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+            let state = app_handle.state::<BackendProcess>();
+            let _ = backend_stop(state);
+        }
+    });
 }
