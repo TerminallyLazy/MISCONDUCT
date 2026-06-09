@@ -1294,7 +1294,7 @@ function App() {
               onDeleteProfile={id => deleteAgentProfile.mutateAsync(id)}
             />
           )}
-          {tab === 'workflow' && <WorkflowPanel base={base} state={state.data} cards={cards} enabled={apiReady} />}
+          {tab === 'workflow' && <WorkflowPanel base={base} state={state.data} cards={cards} profiles={profiles} enabled={apiReady} />}
           {tab === 'ledger' && (
             <EventLedger
               events={orchestrationEvents.events}
@@ -2098,7 +2098,7 @@ function AgentProfileForm({ profile, busy, onSave, onCancel, onDelete }: { profi
   );
 }
 
-function WorkflowPanel({ base, state, cards, enabled }: { base: string; state?: SymphonyState; cards: Card[]; enabled: boolean }) {
+function WorkflowPanel({ base, state, cards, profiles, enabled }: { base: string; state?: SymphonyState; cards: Card[]; profiles: AgentProfile[]; enabled: boolean }) {
   const templatesQuery = useWorkflowTemplates(base, enabled);
   const filesQuery = useWorkflowFiles(base, enabled);
   const [templateId, setTemplateId] = useState('linear_codex_judge_refiner');
@@ -2106,6 +2106,11 @@ function WorkflowPanel({ base, state, cards, enabled }: { base: string; state?: 
   const [overwrite, setOverwrite] = useState(false);
   const [name, setName] = useState('symphony-orchestra-workflow');
   const [objective, setObjective] = useState('Coordinate real work through generator, builder, judge, and refiner phases.');
+  const [generatorProfileId, setGeneratorProfileId] = useState('');
+  const [builderProfileId, setBuilderProfileId] = useState('');
+  const [judgeProfileId, setJudgeProfileId] = useState('');
+  const [refinerProfileId, setRefinerProfileId] = useState('');
+  const [validatorProfileId, setValidatorProfileId] = useState('');
   const [draft, setDraft] = useState('');
   const [validation, setValidation] = useState<WorkflowValidation | null>(null);
   const [preview, setPreview] = useState<WorkflowPreview | null>(null);
@@ -2113,6 +2118,21 @@ function WorkflowPanel({ base, state, cards, enabled }: { base: string; state?: 
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const selectedTemplate = templatesQuery.data?.find(t => t.id === templateId) || templatesQuery.data?.[0];
+  const enabledProfiles = profiles.filter(profile => profile.enabled);
+  const usesValidator = templateId === 'repository_orchestra';
+  const workflowOverrides = () => Object.fromEntries(
+    Object.entries({
+      name,
+      objective,
+      max_concurrent_agents: '2',
+      poll_interval_ms: '30000',
+      generator_profile: generatorProfileId,
+      builder_profile: builderProfileId,
+      judge_profile: judgeProfileId,
+      refiner_profile: refinerProfileId,
+      validator_profile: usesValidator ? validatorProfileId : ''
+    }).filter(([, value]) => String(value || '').trim() !== '')
+  );
   const log = (message: string) => setOperationLog(prev => [message, ...prev].slice(0, 8));
   const fail = (label: string, err: unknown) => {
     const message = `${label}: ${err instanceof Error ? err.message : String(err)}`;
@@ -2123,7 +2143,7 @@ function WorkflowPanel({ base, state, cards, enabled }: { base: string; state?: 
   const generate = useMutation({
     mutationFn: async () => WorkflowGenerateSchema.parse(await api(base, '/api/workflows/generate', {
       method: 'POST',
-      body: JSON.stringify({ template_id: templateId, overrides: { name, objective, max_concurrent_agents: '2', poll_interval_ms: '30000' } })
+      body: JSON.stringify({ template_id: templateId, overrides: workflowOverrides() })
     }, 8000)),
     onSuccess: data => {
       setWorkflowError(null);
@@ -2222,6 +2242,13 @@ function WorkflowPanel({ base, state, cards, enabled }: { base: string; state?: 
           <label>Target path<input value={targetPath} onChange={e => setTargetPath(e.target.value)} placeholder="WORKFLOW.md or folder/WORKFLOW.md" /></label>
         </div>
         <label>Objective<textarea value={objective} onChange={e => setObjective(e.target.value)} /></label>
+        <div className="workflowAssignmentGrid">
+          <ProfileSelect label="Generator" value={generatorProfileId} onChange={setGeneratorProfileId} profiles={enabledProfiles} />
+          <ProfileSelect label="Builder" value={builderProfileId} onChange={setBuilderProfileId} profiles={enabledProfiles} />
+          <ProfileSelect label="Judge" value={judgeProfileId} onChange={setJudgeProfileId} profiles={enabledProfiles} />
+          <ProfileSelect label="Refiner" value={refinerProfileId} onChange={setRefinerProfileId} profiles={enabledProfiles} />
+          {usesValidator && <ProfileSelect label="Validator" value={validatorProfileId} onChange={setValidatorProfileId} profiles={enabledProfiles} />}
+        </div>
         <div className="formActions">
           <button className="button primary" disabled={busy} onClick={() => generate.mutate()}><Music2 size={15} />Generate</button>
           <button className="button secondary" title={!draft ? 'Generate or paste WORKFLOW.md content first.' : 'Run backend workflow validation/judge.'} disabled={busy || !draft} onClick={() => validateDraft.mutate()}>Judge</button>
@@ -2274,6 +2301,19 @@ function WorkflowPanel({ base, state, cards, enabled }: { base: string; state?: 
         </div>
       </aside>
     </section>
+  );
+}
+
+function ProfileSelect({ label, value, onChange, profiles }: { label: string; value: string; onChange: (value: string) => void; profiles: AgentProfile[] }) {
+  return (
+    <label>{label}
+      <select value={value} onChange={event => onChange(event.target.value)}>
+        <option value="">Template default</option>
+        {profiles.map(profile => (
+          <option key={profile.id} value={profile.id}>{profile.name} · {profile.instrument_name} · {profile.section}</option>
+        ))}
+      </select>
+    </label>
   );
 }
 

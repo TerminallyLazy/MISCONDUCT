@@ -196,14 +196,17 @@ defmodule Symphony.Workflow.Files do
   end
 
   def companion_agent_profiles(template_id) when is_binary(template_id),
-    do: Map.get(@companion_profiles, template_id, [])
+    do: companion_agent_profiles(template_id, %{})
 
   def companion_agent_profiles(attrs) when is_map(attrs) do
     attrs = stringify(attrs || %{})
 
     cond do
       is_binary(attrs["template_id"]) or is_binary(attrs["template"]) ->
-        companion_agent_profiles(attrs["template_id"] || attrs["template"])
+        companion_agent_profiles(
+          attrs["template_id"] || attrs["template"],
+          attrs["overrides"] || attrs["context"] || %{}
+        )
 
       is_binary(attrs["content"]) ->
         companion_agent_profiles_from_content(attrs["content"])
@@ -214,6 +217,12 @@ defmodule Symphony.Workflow.Files do
   end
 
   def companion_agent_profiles(_), do: []
+
+  def companion_agent_profiles(template_id, overrides) when is_binary(template_id) do
+    template_id
+    |> base_companion_profiles()
+    |> apply_profile_overrides(overrides)
+  end
 
   def list(opts \\ []) do
     config = Keyword.get(opts, :config) || current_config()
@@ -449,6 +458,11 @@ defmodule Symphony.Workflow.Files do
 
     max_agents = value(o, "max_concurrent_agents", "2")
     poll = value(o, "poll_interval_ms", "30000")
+    profiles = companion_agent_profiles("linear_codex_judge_refiner", o)
+    generator_profile = profile_ref(o, profiles, "generator", "workflow-generator")
+    builder_profile = profile_ref(o, profiles, "builder", "workflow-builder")
+    judge_profile = profile_ref(o, profiles, "judge", "workflow-judge")
+    refiner_profile = profile_ref(o, profiles, "refiner", "workflow-refiner")
 
     """
     ---
@@ -482,24 +496,24 @@ defmodule Symphony.Workflow.Files do
       port: 4004
     generator:
       provider: codex
-      profile: workflow-generator
+      profile: #{yaml(generator_profile)}
       instructions: Draft implementation plans using only real issue context and repository facts.
     builder:
       provider: codex
-      profile: workflow-builder
+      profile: #{yaml(builder_profile)}
       instructions: Run Codex against the issue workspace with scoped repository changes.
     judge:
       provider: codex
-      profile: workflow-judge
+      profile: #{yaml(judge_profile)}
       rubric: [tests_pass, implementation_matches_issue, no_unrequested_file_changes, no_embedded_secrets]
       pass_threshold: 0.8
     refiner:
       provider: codex
-      profile: workflow-refiner
+      profile: #{yaml(refiner_profile)}
       max_attempts: 3
       strategy: fix_judge_findings
     stage_agents:
-    #{stage_agents_yaml("linear_codex_judge_refiner")}
+    #{stage_agents_yaml("linear_codex_judge_refiner", o)}
     ---
     # Workflow
 
@@ -571,6 +585,12 @@ defmodule Symphony.Workflow.Files do
       )
 
     project_path = value(o, "project_path", "TODO: unresolved project path")
+    profiles = companion_agent_profiles("repository_orchestra", o)
+    generator_profile = profile_ref(o, profiles, "generator", "repository-workflow-generator")
+    builder_profile = profile_ref(o, profiles, "builder", "repository-workflow-builder")
+    judge_profile = profile_ref(o, profiles, "judge", "repository-workflow-judge")
+    refiner_profile = profile_ref(o, profiles, "refiner", "repository-workflow-refiner")
+    validator_profile = profile_ref(o, profiles, "validator", "repository-workflow-validator")
 
     """
     ---
@@ -593,23 +613,23 @@ defmodule Symphony.Workflow.Files do
       port: 4004
     generator:
       provider: codex
-      profile: repository-workflow-generator
+      profile: #{yaml(generator_profile)}
     builder:
       provider: codex
-      profile: repository-workflow-builder
+      profile: #{yaml(builder_profile)}
     judge:
       provider: codex
-      profile: repository-workflow-judge
+      profile: #{yaml(judge_profile)}
       rubric: [source_attribution, commands_verified, agents_available, no_embedded_secrets]
     refiner:
       provider: codex
-      profile: repository-workflow-refiner
+      profile: #{yaml(refiner_profile)}
       max_attempts: 3
     validator:
       provider: codex
-      profile: repository-workflow-validator
+      profile: #{yaml(validator_profile)}
     stage_agents:
-    #{stage_agents_yaml("repository_orchestra")}
+    #{stage_agents_yaml("repository_orchestra", o)}
     ---
     # Workflow
 
@@ -707,9 +727,83 @@ defmodule Symphony.Workflow.Files do
 
   defp profile_from_stage_agent(_), do: nil
 
-  defp stage_agents_yaml(template_id) do
+  defp base_companion_profiles(template_id), do: Map.get(@companion_profiles, template_id, [])
+
+  defp apply_profile_overrides(profiles, overrides) do
+    overrides = stringify(overrides || %{})
+
+    profiles
+    |> Enum.map(fn profile ->
+      role = profile["role"] |> to_string() |> String.downcase()
+
+      case selected_profile_id(overrides, role) do
+        nil -> profile
+        id -> selected_stage_profile(id, profile)
+      end
+    end)
+    |> Enum.uniq_by(& &1["id"])
+  end
+
+  defp selected_stage_profile(id, fallback) do
+    case registry_profile(id) do
+      {:ok, profile} ->
+        profile = stringify(profile)
+
+        fallback
+        |> Map.merge(profile)
+        |> Map.put("id", id)
+        |> Map.put("profile_key", profile["profile_key"] || id)
+
+      _ ->
+        fallback
+        |> Map.put("id", id)
+        |> Map.put("profile_key", id)
+        |> Map.put("name", humanize(id))
+    end
+  end
+
+  defp registry_profile(id) do
+    if Process.whereis(Symphony.AgentProfileRegistry) do
+      Symphony.AgentProfileRegistry.get(id)
+    else
+      {:error, :registry_unavailable}
+    end
+  catch
+    :exit, _ -> {:error, :registry_unavailable}
+  end
+
+  defp profile_ref(overrides, profiles, role, fallback) do
+    selected_profile_id(overrides, role) || role_profile_id(profiles, role, fallback)
+  end
+
+  defp role_profile_id(profiles, role, fallback) do
+    profiles
+    |> Enum.find(fn profile ->
+      profile["role"] |> to_string() |> String.downcase() == role
+    end)
+    |> case do
+      nil -> fallback
+      profile -> profile["id"] || fallback
+    end
+  end
+
+  defp selected_profile_id(overrides, role) do
+    overrides = stringify(overrides || %{})
+    profiles = overrides["profiles"] |> map_or_empty() |> stringify()
+
+    [
+      overrides["#{role}_profile"],
+      overrides["#{role}_profile_id"],
+      profiles[role],
+      profiles["#{role}_profile"],
+      profiles["#{role}_profile_id"]
+    ]
+    |> Enum.find(&present?/1)
+  end
+
+  defp stage_agents_yaml(template_id, overrides) do
     template_id
-    |> companion_agent_profiles()
+    |> companion_agent_profiles(overrides)
     |> Enum.map(&stage_agent_yaml/1)
     |> Enum.join("\n")
   end

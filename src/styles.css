@@ -485,6 +485,7 @@ textarea.tall { min-height: 150px; }
 .workflowTemplateCard small { color: var(--muted); line-height: 1.35; }
 .workflowTemplateCard span { font-size: 10px; text-transform: uppercase; color: #8a5b29; }
 .workflowFieldGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.workflowAssignmentGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .workflowComposer label, .workflowInspector label { display: grid; gap: 6px; font-size: 11px; font-weight: 900; text-transform: uppercase; color: #75502a; margin-bottom: 10px; }
 .workflowEditor { min-height: 390px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.45; white-space: pre; }
 .targetPreview { display: grid; gap: 6px; border: 3px solid var(--ink); background: #f4dfb4; padding: 10px; margin-bottom: 12px; }
@@ -498,7 +499,7 @@ textarea.tall { min-height: 150px; }
 .operationLog p { margin: 5px 0; font-size: 12px; }
 .pill.success { background: #bee7a5; }
 .pill.warning { background: #ffe58a; }
-@media (max-width: 1380px) { .workflowBuilder { grid-template-columns: 1fr; } .workflowTemplateGrid { grid-template-columns: 1fr; } }
+@media (max-width: 1380px) { .workflowBuilder { grid-template-columns: 1fr; } .workflowTemplateGrid, .workflowAssignmentGrid { grid-template-columns: 1fr; } }
 
 /* Orchestration ledger */
 .ledgerPage { height: 100%; min-height: 0; display: grid; grid-template-rows: auto 1fr; gap: 12px; overflow: hidden; }

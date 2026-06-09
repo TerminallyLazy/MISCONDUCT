@@ -241,6 +241,56 @@ defmodule Symphony.Http.RouterTest do
     assert saved["agent_profile_changes"]["count"] == 4
   end
 
+  test "workflow generation can assign an existing stage agent profile to a role" do
+    name = "Solo Builder #{System.unique_integer([:positive])}"
+
+    conn =
+      conn(
+        :post,
+        "/api/agents",
+        Jason.encode!(%{
+          name: name,
+          role: "Builder",
+          profile_key: "solo-builder",
+          section: "Strings",
+          instrument_name: "Cello",
+          capabilities: ["implementation", "codex"],
+          music: %{"motif" => "Custom build line", "dynamic" => "mezzo-forte"},
+          stage_position: %{"section" => "strings", "seat" => "front-right"}
+        })
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 201
+    profile = Jason.decode!(conn.resp_body)["profile"]
+
+    conn =
+      conn(
+        :post,
+        "/api/workflows/generate",
+        Jason.encode!(%{
+          template_id: "linear_codex_judge_refiner",
+          overrides: %{
+            name: "router-custom-builder",
+            objective: "Use the selected stage builder.",
+            builder_profile: profile["id"]
+          }
+        })
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 200
+    generated = Jason.decode!(conn.resp_body)
+    generated_ids = Enum.map(generated["agent_profiles"], & &1["id"])
+    refute "workflow-builder" in generated_ids
+    assert profile["id"] in generated_ids
+    assert generated["content"] =~ "profile: #{inspect(profile["id"])}"
+    assert generated["content"] =~ "instrument: \"Cello\""
+    assert generated["content"] =~ "seat: \"front-right\""
+  end
+
   test "workflow judge flags missing judge and refiner metadata" do
     content = """
     ---
