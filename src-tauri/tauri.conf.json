@@ -41,7 +41,7 @@
       "icons/icon.png"
     ],
     "resources": {
-      "resources/symphony_backend": "symphony_backend"
+      "resources/symphony_backend.tar.gz": "symphony_backend.tar.gz"
     }
   }
 }

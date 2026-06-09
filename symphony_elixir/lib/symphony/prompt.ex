@@ -1,17 +1,22 @@
 defmodule Symphony.Prompt do
-  def render(template, issue, attempt \\ nil) do
+  def render(template, issue, attempt \\ nil, context \\ %{}) do
     Regex.scan(~r/{{\s*([^}]+?)\s*}}/, template)
     |> Enum.reduce_while({:ok, template}, fn [raw, expr], {:ok, acc} ->
-      case val(String.trim(expr), issue, attempt) do
+      case val(String.trim(expr), issue, attempt, context) do
         {:ok, v} -> {:cont, {:ok, String.replace(acc, raw, to_string(v || ""))}}
         {:error, e} -> {:halt, {:error, {:template_render_error, e}}}
       end
     end)
   end
 
-  defp val("attempt", _, a), do: {:ok, a}
-  defp val("issue." <> p, i, _), do: getp(i, String.split(p, "."), "issue." <> p)
-  defp val(o, _, _), do: {:error, "unknown variable #{o}"}
+  defp val("attempt", _, a, _), do: {:ok, a}
+  defp val("issue." <> p, i, _, _), do: getp(i, String.split(p, "."), "issue." <> p)
+
+  defp val("agent." <> p, _, _, c),
+    do:
+      getp(Map.get(c, :agent) || Map.get(c, "agent") || %{}, String.split(p, "."), "agent." <> p)
+
+  defp val(o, _, _, _), do: {:error, "unknown variable #{o}"}
   defp getp(v, [], _), do: {:ok, if(is_map(v) or is_list(v), do: Jason.encode!(v), else: v)}
 
   defp getp(v, [k | r], full) do

@@ -36,6 +36,14 @@ defmodule Symphony.WorkflowConfigTest do
     assert {:ok, "Work on LIN-1 attempt 3."} ==
              Symphony.Prompt.render(config.workflow.prompt_template, issue, 3)
 
+    assert {:ok, "Agent Codex Builder plays Violin."} ==
+             Symphony.Prompt.render(
+               "Agent {{ agent.name }} plays {{ agent.instrument_name }}.",
+               issue,
+               3,
+               %{agent: %{name: "Codex Builder", instrument_name: "Violin"}}
+             )
+
     assert {:error, {:template_render_error, _}} = Symphony.Prompt.render("{{ missing }}", issue)
   end
 end

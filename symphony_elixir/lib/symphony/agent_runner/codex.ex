@@ -97,14 +97,28 @@ defmodule Symphony.AgentRunner.Codex do
   end
 
   defp env(config, run, cwd) do
+    profile = run.agent_profile || %{}
+
     Symphony.Codex.Auth.env() ++
       [
         {"SYMPHONY_CODEX_COMMAND", to_string(config.codex_command || "")},
         {"SYMPHONY_ISSUE_ID", to_string(run.issue_id || "")},
         {"SYMPHONY_ISSUE_IDENTIFIER", to_string(run.issue_identifier || "")},
         {"SYMPHONY_WORKSPACE", cwd},
+        {"SYMPHONY_RUN_PHASE", to_string(run.phase || "build")},
+        {"SYMPHONY_AGENT_PROFILE_ID", profile_value(profile, :id)},
+        {"SYMPHONY_AGENT_PROFILE_NAME", profile_value(profile, :name)},
+        {"SYMPHONY_AGENT_PROFILE_ROLE", profile_value(profile, :role)},
+        {"SYMPHONY_AGENT_PROFILE_SECTION", profile_value(profile, :section)},
+        {"SYMPHONY_AGENT_PROFILE_INSTRUMENT", profile_value(profile, :instrument_name)},
+        {"SYMPHONY_AGENT_PROFILE_STATUS", profile_value(profile, :status)},
         {"SYMPHONY_AGENT_RUNNER", "codex_subprocess"}
       ]
+  end
+
+  defp profile_value(profile, key) do
+    value = Map.get(profile, key) || Map.get(profile, Atom.to_string(key))
+    to_string(value || "")
   end
 
   defp shell_quote(value), do: "'" <> String.replace(to_string(value), "'", "'\\''") <> "'"

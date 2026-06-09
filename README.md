@@ -25,6 +25,8 @@ npm run build
 npm run tauri:build
 ```
 
+`npm run tauri:build` builds and stages the Elixir Mix release into `src-tauri/resources/symphony_backend` before Tauri packages the desktop app.
+
 Backend source lives in `symphony_elixir/`.
 
 ```bash

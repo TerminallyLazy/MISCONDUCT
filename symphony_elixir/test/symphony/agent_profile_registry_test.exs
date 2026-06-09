@@ -71,4 +71,55 @@ defmodule Symphony.AgentProfileRegistryTest do
     assert {:ok, persisted} = AgentProfileRegistry.get("cello-builder", reloaded)
     assert persisted["name"] == "Cello Builder"
   end
+
+  test "ensure_many creates and refreshes deterministic stage profiles", %{server: server} do
+    profiles = [
+      %{
+        "id" => "workflow-judge",
+        "name" => "Workflow Judge",
+        "role" => "Judge",
+        "profile_key" => "workflow-judge",
+        "section" => "Piano",
+        "instrument_name" => "Piano",
+        "capabilities" => ["review", "quality-gates"],
+        "music" => %{"motif" => "Movement II / Judge"}
+      },
+      %{
+        "id" => "workflow-refiner",
+        "name" => "Workflow Refiner",
+        "role" => "Refiner",
+        "profile_key" => "workflow-refiner",
+        "section" => "Brass",
+        "instrument_name" => "French Horn",
+        "capabilities" => ["refinement"]
+      }
+    ]
+
+    assert {:ok, created} = AgentProfileRegistry.ensure_many(profiles, server)
+    assert created.created == ["workflow-judge", "workflow-refiner"]
+    assert created.updated == []
+    assert Enum.map(created.profiles, & &1["id"]) == ["workflow-judge", "workflow-refiner"]
+
+    assert {:ok, refreshed} =
+             AgentProfileRegistry.ensure_many(
+               [
+                 %{
+                   "id" => "workflow-judge",
+                   "name" => "Workflow Judge",
+                   "role" => "Judge",
+                   "section" => "Piano",
+                   "instrument_name" => "Concert Grand",
+                   "capabilities" => ["review", "safety"]
+                 }
+               ],
+               server
+             )
+
+    assert refreshed.created == []
+    assert refreshed.updated == ["workflow-judge"]
+    assert {:ok, [judge, refiner]} = AgentProfileRegistry.list(server)
+    assert refiner["id"] == "workflow-refiner"
+    assert judge["instrument_name"] == "Concert Grand"
+    assert judge["capabilities"] == ["review", "safety"]
+  end
 end

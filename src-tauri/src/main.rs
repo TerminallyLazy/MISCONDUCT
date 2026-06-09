@@ -1,8 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::Serialize;
+use flate2::read::GzDecoder;
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -11,6 +12,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use tar::Archive;
 use tauri::{Manager, State};
 
 const PREFERRED_PORT: u16 = 4004;
@@ -41,6 +43,42 @@ struct BackendInfo {
 struct BackendLogs {
     log_path: Option<String>,
     text: String,
+}
+
+#[derive(Debug, Clone)]
+enum BackendSource {
+    Release { dir: PathBuf, executable: PathBuf },
+    MixSource { dir: PathBuf },
+}
+
+impl BackendSource {
+    fn dir(&self) -> &Path {
+        match self {
+            BackendSource::Release { dir, .. } => dir,
+            BackendSource::MixSource { dir } => dir,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            BackendSource::Release { .. } => "bundled-mix-release",
+            BackendSource::MixSource { .. } => "elixir-source-dev",
+        }
+    }
+
+    fn launcher(&self) -> String {
+        match self {
+            BackendSource::Release { executable, .. } => executable.display().to_string(),
+            BackendSource::MixSource { .. } => "mix run --no-halt".to_string(),
+        }
+    }
+
+    fn mix_env(&self) -> &'static str {
+        match self {
+            BackendSource::Release { .. } => "prod",
+            BackendSource::MixSource { .. } => "dev",
+        }
+    }
 }
 
 fn base_url(port: u16) -> String {
@@ -94,19 +132,82 @@ fn wait_for_health(port: u16, timeout: Duration) -> bool {
     false
 }
 
-fn backend_resource_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn release_source(dir: PathBuf) -> Option<BackendSource> {
+    let executable = backend_executable(&dir);
+    executable
+        .exists()
+        .then_some(BackendSource::Release { dir, executable })
+}
+
+fn archive_is_newer(archive: &Path, executable: &Path) -> bool {
+    let Ok(archive_modified) = fs::metadata(archive).and_then(|m| m.modified()) else {
+        return false;
+    };
+    let Ok(executable_modified) = fs::metadata(executable).and_then(|m| m.modified()) else {
+        return true;
+    };
+    archive_modified > executable_modified
+}
+
+fn archive_source(app: &tauri::AppHandle, archive_path: PathBuf) -> Result<Option<BackendSource>, String> {
+    if !archive_path.exists() {
+        return Ok(None);
+    }
+
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let extracted_dir = app_data_dir.join("symphony_backend");
+    let executable = backend_executable(&extracted_dir);
+
+    if !executable.exists() || archive_is_newer(&archive_path, &executable) {
+        fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+        let _ = fs::remove_dir_all(&extracted_dir);
+
+        let file = File::open(&archive_path).map_err(|e| e.to_string())?;
+        let decoder = GzDecoder::new(file);
+        let mut archive = Archive::new(decoder);
+        archive.unpack(&app_data_dir).map_err(|e| e.to_string())?;
+    }
+
+    match release_source(extracted_dir.clone()) {
+        Some(source) => Ok(Some(source)),
+        None => Err(format!(
+            "Backend archive extracted but release executable was not found at {}",
+            backend_executable(&extracted_dir).display()
+        )),
+    }
+}
+
+fn backend_source(app: &tauri::AppHandle) -> Result<BackendSource, String> {
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let direct = resource_dir.join("symphony_backend");
-    if direct.exists() {
-        return Ok(direct);
+    if let Some(source) = release_source(direct.clone()) {
+        return Ok(source);
     }
+
+    let archive = resource_dir.join("symphony_backend.tar.gz");
+    if let Some(source) = archive_source(app, archive.clone())? {
+        return Ok(source);
+    }
+
     let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/symphony_backend");
-    if dev.exists() {
-        return Ok(dev);
+    if let Some(source) = release_source(dev.clone()) {
+        return Ok(source);
     }
+
+    if cfg!(debug_assertions) {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        if let Some(repo_root) = manifest_dir.parent() {
+            let source_dir = repo_root.join("symphony_elixir");
+            if source_dir.join("mix.exs").exists() {
+                return Ok(BackendSource::MixSource { dir: source_dir });
+            }
+        }
+    }
+
     Err(format!(
-        "Bundled backend release not found. Looked in {} and {}",
+        "Bundled backend release executable not found. Looked in {}, {}, and {}",
         direct.display(),
+        archive.display(),
         dev.display()
     ))
 }
@@ -116,6 +217,26 @@ fn backend_executable(dir: &Path) -> PathBuf {
         dir.join("bin").join("symphony_elixir.bat")
     } else {
         dir.join("bin").join("symphony_elixir")
+    }
+}
+
+fn backend_command(source: &BackendSource) -> Command {
+    match source {
+        BackendSource::Release { executable, .. } if cfg!(windows) => {
+            let mut c = Command::new("cmd");
+            c.arg("/C").arg(executable).arg("start");
+            c
+        }
+        BackendSource::Release { executable, .. } => {
+            let mut c = Command::new(executable);
+            c.arg("start");
+            c
+        }
+        BackendSource::MixSource { .. } => {
+            let mut c = Command::new("mix");
+            c.arg("run").arg("--no-halt");
+            c
+        }
     }
 }
 
@@ -197,13 +318,9 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
     }
 
     let port = choose_port()?;
-    let backend_dir = backend_resource_dir(&app)?;
-    let executable = backend_executable(&backend_dir);
-    if !executable.exists() {
-        let msg = format!("Bundled backend executable not found: {}", executable.display());
-        *state.last_error.lock().unwrap() = Some(msg.clone());
-        return Err(msg);
-    }
+    let backend_source = backend_source(&app)?;
+    let backend_dir = backend_source.dir().to_path_buf();
+    let release_node = format!("symphony_elixir_{port}");
 
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
@@ -212,23 +329,16 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
     fs::create_dir_all(&workspace_root).map_err(|e| e.to_string())?;
     let agent_profiles_path = app_data_dir.join("agent_profiles.json");
     let log_path = app_log_path(&app)?;
-    append_log(&log_path, &format!("--- starting bundled backend on {} ---", base_url(port)));
-    append_log(&log_path, &format!("backend_dir={} executable={}", backend_dir.display(), executable.display()));
-    append_log(&log_path, &format!("workflow_path={} workspace_root={} agent_profiles_path={}", workflow_path.display(), workspace_root.display(), agent_profiles_path.display()));
+    append_log(&log_path, &format!("--- starting {} on {} ---", backend_source.label(), base_url(port)));
+    append_log(&log_path, &format!("backend_dir={} launcher={}", backend_dir.display(), backend_source.launcher()));
+    append_log(&log_path, &format!("release_node={release_node} workflow_path={} workspace_root={} agent_profiles_path={}", workflow_path.display(), workspace_root.display(), agent_profiles_path.display()));
 
-    let mut command = if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(&executable).arg("start");
-        c
-    } else {
-        let mut c = Command::new(&executable);
-        c.arg("start");
-        c
-    };
+    let mut command = backend_command(&backend_source);
 
     command
         .current_dir(&backend_dir)
-        .env("MIX_ENV", "prod")
+        .env("MIX_ENV", backend_source.mix_env())
+        .env("RELEASE_NODE", &release_node)
         .env("SYMPHONY_DESKTOP", "1")
         .env("SYMPHONY_HTTP_ENABLED", "true")
         .env("SYMPHONY_HTTP_HOST", "127.0.0.1")
@@ -242,7 +352,7 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
         .stderr(Stdio::piped());
 
     let mut child = command.spawn().map_err(|e| {
-        let msg = format!("failed to spawn bundled backend: {e}");
+        let msg = format!("failed to spawn {}: {e}", backend_source.label());
         *state.last_error.lock().unwrap() = Some(msg.clone());
         msg
     })?;
@@ -260,7 +370,7 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
         base_url: base_url(port),
         host: "127.0.0.1".to_string(),
         port,
-        source: "bundled-mix-release".to_string(),
+        source: backend_source.label().to_string(),
         healthy: false,
         managed: true,
         pid: Some(pid),
@@ -282,7 +392,7 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
             .filter(|text| !text.trim().is_empty())
             .unwrap_or_else(|| "No backend log output captured yet.".to_string());
         let msg = format!(
-            "Bundled backend did not become healthy at {}.{} Latest backend log:\n{}",
+            "Managed backend did not become healthy at {}.{} Latest backend log:\n{}",
             base_url(port),
             exit_note,
             log_tail
@@ -292,7 +402,7 @@ fn ensure_backend_ready(app: tauri::AppHandle, state: State<'_, BackendProcess>)
         return Err(msg);
     }
 
-    append_log(&log_path, "--- bundled backend healthy ---");
+    append_log(&log_path, &format!("--- {} healthy ---", backend_source.label()));
     Ok(status_from_state(&state))
 }
 

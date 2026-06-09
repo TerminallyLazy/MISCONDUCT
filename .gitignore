@@ -9,3 +9,12 @@ symphony_elixir/_build/
 symphony_elixir/deps/
 symphony_elixir/symphony_workspaces/
 symphony_elixir/erl_crash.dump
+src-tauri/resources/symphony_backend/*
+!src-tauri/resources/symphony_backend/.gitkeep
+!src-tauri/resources/symphony_backend/bin/
+src-tauri/resources/symphony_backend/bin/*
+!src-tauri/resources/symphony_backend/bin/.gitkeep
+!src-tauri/resources/symphony_backend/releases/
+src-tauri/resources/symphony_backend/releases/*
+!src-tauri/resources/symphony_backend/releases/.gitkeep
+src-tauri/resources/symphony_backend.tar.gz

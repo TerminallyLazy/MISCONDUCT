@@ -6,6 +6,7 @@ defmodule SymphonyElixir.Application do
 
     children =
       [
+        {Symphony.Events, []},
         {Task.Supervisor, name: Symphony.AgentSupervisor},
         {Symphony.Workspace.Manager, root: config.workspace_root},
         {Symphony.AgentProfileRegistry, config: config},

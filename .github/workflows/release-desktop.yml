@@ -131,6 +131,8 @@ jobs:
           if (!$ok) { throw "Backend health check failed" }
           .\bin\symphony_elixir.bat stop
           Pop-Location
+      - name: Pack backend archive for Tauri bundle
+        run: npm run build:backend
       - name: Regenerate macOS app icon
         if: runner.os == 'macOS'
         run: |
@@ -157,6 +159,7 @@ jobs:
         run: |
           set -euxo pipefail
           find src-tauri/target -type f \( -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.exe' -o -name '*.msi' -o -name '*.app.tar.gz' \) -print
+          test -f src-tauri/resources/symphony_backend.tar.gz
           find src-tauri/resources/symphony_backend -maxdepth 3 -type f | sort | head -80
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4

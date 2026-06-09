@@ -68,6 +68,8 @@ const KanbanCardSchema = z.object({
   title: z.string().optional(),
   state: z.string().optional(),
   status: z.any().optional(),
+  stage: z.string().optional(),
+  phase: z.string().optional(),
   operator_status: z.string().optional(),
   operator_summary: z.string().nullable().optional(),
   workspace_path: z.string().nullable().optional(),
@@ -76,6 +78,18 @@ const KanbanCardSchema = z.object({
   last_message: z.string().nullable().optional(),
   turn_count: z.number().optional(),
   tokens: z.object({ total_tokens: z.number().default(0) }).passthrough().optional(),
+  agent_profile: z.any().optional(),
+  agent_profile_id: z.string().nullable().optional(),
+  agent_name: z.string().nullable().optional(),
+  agent_role: z.string().nullable().optional(),
+  agent_section: z.string().nullable().optional(),
+  instrument_name: z.string().nullable().optional(),
+  agent_profile_status: z.string().nullable().optional(),
+  judge_verdict: z.any().optional(),
+  verdict: z.string().nullable().optional(),
+  verdict_path: z.string().nullable().optional(),
+  refiner_attempt: z.number().nullable().optional(),
+  refiner_max_attempts: z.number().nullable().optional(),
   attempt: z.number().optional(),
   due_at: z.string().nullable().optional(),
   error: z.string().nullable().optional(),
@@ -115,6 +129,8 @@ const AgentProfileSchema = z.object({
   status: z.string().default('idle'),
   current_assignments: z.array(z.string()).default([]),
   assignment_policy: z.any().optional(),
+  music: z.any().optional(),
+  stage_position: z.any().optional(),
   created_at: z.string().optional(),
   updated_at: z.string().optional()
 }).passthrough();
@@ -160,7 +176,13 @@ const WorkflowGenerateSchema = z.object({
   content: z.string(),
   validation: WorkflowValidationSchema.optional(),
   review: z.any().optional(),
-  provenance: z.any().optional()
+  provenance: z.any().optional(),
+  agent_profiles: z.array(AgentProfileSchema).default([]),
+  agent_profile_changes: z.object({
+    created: z.array(z.string()).default([]),
+    updated: z.array(z.string()).default([]),
+    count: z.number().default(0)
+  }).optional()
 }).passthrough();
 const WorkflowPreviewSchema = z.object({
   ok: z.boolean().optional(),
@@ -179,7 +201,8 @@ type WorkflowTemplate = z.infer<typeof WorkflowTemplateSchema>;
 type WorkflowValidation = z.infer<typeof WorkflowValidationSchema>;
 type WorkflowPreview = z.infer<typeof WorkflowPreviewSchema>;
 type WorkflowList = z.infer<typeof WorkflowListSchema>;
-type Tab = 'console' | 'agents' | 'workflow' | 'safety' | 'settings';
+type Tab = 'console' | 'agents' | 'workflow' | 'ledger' | 'safety' | 'settings';
+type ApiMode = 'initializing' | 'desktop' | 'proxy' | 'override' | 'desktop-error';
 type Card = {
   id: string;
   backendId: string;
@@ -188,6 +211,11 @@ type Card = {
   column: string;
   status: string;
   agent: string;
+  agentProfileId?: string;
+  agentRole?: string;
+  agentProfileStatus?: string;
+  phase?: string;
+  stage?: string;
   turns: number;
   tokens: number;
   priority?: number;
@@ -206,6 +234,7 @@ const nav: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'console', label: 'Console', icon: Command },
   { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'workflow', label: 'Workflow', icon: GitBranch },
+  { id: 'ledger', label: 'Ledger', icon: Activity },
   { id: 'safety', label: 'Safety', icon: ShieldAlert },
   { id: 'settings', label: 'Settings', icon: Settings }
 ];
@@ -213,6 +242,11 @@ const nav: { id: Tab; label: string; icon: React.ElementType }[] = [
 function getApiBase() {
   const saved = localStorage.getItem('symphony.apiBase');
   return saved?.trim() || '';
+}
+
+function hasTauriBridge() {
+  const win = window as unknown as { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
+  return Boolean(win.__TAURI_INTERNALS__ || win.__TAURI__);
 }
 
 async function api<T>(base: string, path: string, init?: RequestInit, timeoutMs = 7_500): Promise<T> {
@@ -238,45 +272,50 @@ async function api<T>(base: string, path: string, init?: RequestInit, timeoutMs 
   }
 }
 
-function useSymphonyState(base: string) {
+function useSymphonyState(base: string, enabled = true) {
   return useQuery({
     queryKey: ['state', base],
     queryFn: async () => StateSchema.parse(await api(base, '/api/v1/state')),
-    refetchInterval: 7_500
+    refetchInterval: 7_500,
+    enabled
   });
 }
 
-function useKanban(base: string) {
+function useKanban(base: string, enabled = true) {
   return useQuery({
     queryKey: ['kanban', base],
     queryFn: async () => KanbanSchema.parse(await api(base, '/api/kanban')),
-    refetchInterval: 7_500
+    refetchInterval: 7_500,
+    enabled
   });
 }
 
-function useAgentProfiles(base: string) {
+function useAgentProfiles(base: string, enabled = true) {
   return useQuery<AgentProfilesResponse>({
     queryKey: ['agentProfiles', base],
     queryFn: async () => AgentProfilesResponseSchema.parse(await api(base, '/api/agents')),
-    refetchInterval: 15_000
+    refetchInterval: 15_000,
+    enabled
   });
 }
 
-function useWorkflowTemplates(base: string) {
+function useWorkflowTemplates(base: string, enabled = true) {
   return useQuery({
     queryKey: ['workflowTemplates', base],
     queryFn: async () => WorkflowTemplatesSchema.parse(await api(base, '/api/workflows/templates')).templates,
     refetchInterval: false,
-    staleTime: 60_000
+    staleTime: 60_000,
+    enabled
   });
 }
 
-function useWorkflowFiles(base: string) {
+function useWorkflowFiles(base: string, enabled = true) {
   return useQuery({
     queryKey: ['workflowFiles', base],
     queryFn: async () => WorkflowListSchema.parse(await api(base, '/api/workflows')),
     refetchInterval: false,
-    staleTime: 30_000
+    staleTime: 30_000,
+    enabled
   });
 }
 
@@ -301,9 +340,10 @@ function emptyAgentProfile(): AgentProfile {
 }
 
 function makeIdleMusicians(profiles: AgentProfile[], liveCards: Card[]): IdleMusician[] {
+  const activeProfileIds = new Set(liveCards.map(card => card.agentProfileId).filter(Boolean));
   const activeNames = new Set(liveCards.map(card => card.agent.toLowerCase()));
   return profiles
-    .filter(profile => !activeNames.has(profile.name.toLowerCase()))
+    .filter(profile => !activeProfileIds.has(profile.id) && !activeNames.has(profile.name.toLowerCase()))
     .map(profile => ({
       id: `profile-${profile.id}`,
       profile,
@@ -332,7 +372,8 @@ function liveAgentFor(column: string, status: string) {
   if (column === 'Retry' || s.includes('retry')) return 'Backoff Agent';
   if (column === 'Done' || s.includes('complete')) return 'Finisher';
   if (column === 'Blocked' || s.includes('block')) return 'Guardian';
-  if (column === 'Human Review' || s.includes('review')) return 'Reviewer';
+  if (s.includes('refin')) return 'Refiner';
+  if (column === 'Human Review' || s.includes('review') || s.includes('judge')) return 'Reviewer';
   if (column === 'In Progress' || s.includes('run') || s.includes('execut')) return 'Builder';
   return 'Planner';
 }
@@ -341,7 +382,8 @@ function movementFor(column: string, status: string) {
   const s = `${column} ${status}`.toLowerCase();
   if (s.includes('block')) return 'Movement V · Dissonance';
   if (s.includes('retry')) return 'Movement IV · Rehearsal';
-  if (s.includes('review')) return 'Movement III · Review Cadenza';
+  if (s.includes('refin')) return 'Movement III · Refinement';
+  if (s.includes('review') || s.includes('judge')) return 'Movement III · Review Cadenza';
   if (s.includes('done') || s.includes('complete')) return 'Finale · Resolution';
   if (s.includes('progress') || s.includes('run') || s.includes('execut')) return 'Movement II · Implementation';
   return 'Movement I · Overture';
@@ -351,7 +393,8 @@ function sectionFor(column: string, status: string, labels?: unknown[]) {
   const text = `${column} ${status} ${(labels || []).map(String).join(' ')}`.toLowerCase();
   if (text.includes('test') || text.includes('ci')) return 'Percussion';
   if (text.includes('security') || text.includes('guard') || text.includes('block')) return 'Brass';
-  if (text.includes('review')) return 'Piano';
+  if (text.includes('refin')) return 'Brass';
+  if (text.includes('review') || text.includes('judge')) return 'Piano';
   if (text.includes('research') || text.includes('plan')) return 'Woodwinds';
   if (text.includes('retry')) return 'Timpani';
   if (text.includes('done') || text.includes('complete')) return 'Bells';
@@ -362,7 +405,7 @@ function instrumentNameFor(section: string, agent: string, status: string) {
   const s = `${section} ${agent} ${status}`.toLowerCase();
   if (s.includes('timpani') || s.includes('retry') || s.includes('percussion')) return 'Timpani';
   if (s.includes('brass') || s.includes('guardian') || s.includes('block')) return 'French Horn';
-  if (s.includes('piano') || s.includes('review')) return 'Piano';
+  if (s.includes('piano') || s.includes('review') || s.includes('judge')) return 'Piano';
   if (s.includes('woodwind') || s.includes('planner')) return 'Clarinet';
   if (s.includes('bell') || s.includes('finish')) return 'Glockenspiel';
   return 'Violin';
@@ -394,8 +437,9 @@ const audioScales = {
 
 type OrchestraAudioState = { enabled: boolean; ready: boolean; activeVoices: number; error?: string };
 
-function useAgentOrchestra({ enabled, cards, offline }: { enabled: boolean; cards: Card[]; offline: boolean }): OrchestraAudioState {
+function useAgentOrchestra({ enabled, cards, idleMusicians, offline }: { enabled: boolean; cards: Card[]; idleMusicians: IdleMusician[]; offline: boolean }): OrchestraAudioState {
   const cardsRef = useRef(cards);
+  const idleRef = useRef(idleMusicians);
   const offlineRef = useRef(offline);
   const ctxRef = useRef<AudioContext | null>(null);
   const masterRef = useRef<GainNode | null>(null);
@@ -406,9 +450,10 @@ function useAgentOrchestra({ enabled, cards, offline }: { enabled: boolean; card
 
   useEffect(() => {
     cardsRef.current = cards;
+    idleRef.current = idleMusicians;
     offlineRef.current = offline;
-    setAudioState(prev => ({ ...prev, enabled, activeVoices: Math.min(8, offline ? 0 : cards.length) }));
-  }, [cards, enabled, offline]);
+    setAudioState(prev => ({ ...prev, enabled, activeVoices: orchestraVoiceCount(cards, idleMusicians, offline) }));
+  }, [cards, idleMusicians, enabled, offline]);
 
   useEffect(() => {
     if (!enabled) {
@@ -441,8 +486,8 @@ function useAgentOrchestra({ enabled, cards, offline }: { enabled: boolean; card
       masterRef.current.gain.linearRampToValueAtTime(0.16, ctx.currentTime + 0.35);
       nextTimeRef.current = ctx.currentTime + 0.05;
       if (timerRef.current) window.clearInterval(timerRef.current);
-      timerRef.current = window.setInterval(() => scheduleOrchestra(ctx, masterRef.current!, cardsRef, offlineRef, stepRef, nextTimeRef), 30);
-      setAudioState({ enabled: true, ready: true, activeVoices: Math.min(8, cardsRef.current.length) });
+      timerRef.current = window.setInterval(() => scheduleOrchestra(ctx, masterRef.current!, cardsRef, idleRef, offlineRef, stepRef, nextTimeRef), 30);
+      setAudioState({ enabled: true, ready: true, activeVoices: orchestraVoiceCount(cardsRef.current, idleRef.current, offlineRef.current) });
     } catch (err) {
       setAudioState({ enabled: false, ready: false, activeVoices: 0, error: err instanceof Error ? err.message : String(err) });
     }
@@ -456,10 +501,17 @@ function useAgentOrchestra({ enabled, cards, offline }: { enabled: boolean; card
   return audioState;
 }
 
+function orchestraVoiceCount(cards: Card[], idleMusicians: IdleMusician[], offline: boolean) {
+  if (offline) return 0;
+  const idleCount = idleMusicians.filter(musician => musician.status === 'idle').length;
+  return Math.min(12, cards.length + Math.min(8, idleCount));
+}
+
 function scheduleOrchestra(
   ctx: AudioContext,
   out: AudioNode,
   cardsRef: React.MutableRefObject<Card[]>,
+  idleRef: React.MutableRefObject<IdleMusician[]>,
   offlineRef: React.MutableRefObject<boolean>,
   stepRef: React.MutableRefObject<number>,
   nextTimeRef: React.MutableRefObject<number>
@@ -467,11 +519,14 @@ function scheduleOrchestra(
   const stepDur = 60 / 88 / 2;
   while (nextTimeRef.current < ctx.currentTime + 0.14) {
     const cards = offlineRef.current ? [] : prioritizeCards(cardsRef.current).slice(0, 8);
-    if (cards.length) {
+    const idleMusicians = offlineRef.current ? [] : prioritizeIdleMusicians(idleRef.current).slice(0, Math.max(0, 12 - cards.length));
+    const totalVoices = cards.length + idleMusicians.length;
+    if (totalVoices) {
       const hasBlocked = cards.some(card => card.column === 'Blocked');
       const hasRetry = cards.some(card => card.column === 'Retry');
       const scale = hasBlocked ? audioScales.blocked : hasRetry ? audioScales.retry : cards.some(card => card.column === 'In Progress') ? audioScales.active : audioScales.calm;
-      cards.forEach((card, index) => scheduleCardVoice(ctx, out, card, index, cards.length, scale, stepRef.current, nextTimeRef.current));
+      cards.forEach((card, index) => scheduleCardVoice(ctx, out, card, index, totalVoices, scale, stepRef.current, nextTimeRef.current));
+      idleMusicians.forEach((musician, index) => scheduleIdleVoice(ctx, out, musician, cards.length + index, totalVoices, scale, stepRef.current, nextTimeRef.current));
     }
     stepRef.current += 1;
     nextTimeRef.current += stepDur;
@@ -481,6 +536,13 @@ function scheduleOrchestra(
 function prioritizeCards(cards: Card[]) {
   const weight = (card: Card) => ({ Blocked: 0, Retry: 1, 'In Progress': 2, 'Human Review': 3, Ready: 4, Done: 5 }[card.column] ?? 6);
   return [...cards].sort((a, b) => weight(a) - weight(b));
+}
+
+function prioritizeIdleMusicians(musicians: IdleMusician[]) {
+  const sectionWeight = (section: string) => ({ Strings: 0, Woodwinds: 1, Brass: 2, Piano: 3, Percussion: 4, Bells: 5 }[section] ?? 6);
+  return musicians
+    .filter(musician => musician.status === 'idle')
+    .sort((a, b) => sectionWeight(a.section) - sectionWeight(b.section) || a.agent.localeCompare(b.agent));
 }
 
 function scheduleCardVoice(ctx: AudioContext, out: AudioNode, card: Card, index: number, total: number, scale: number[], step: number, time: number) {
@@ -496,14 +558,42 @@ function scheduleCardVoice(ctx: AudioContext, out: AudioNode, card: Card, index:
   if (spec.rhythm === 'cadence' && step % 8 === 0) playSynthNote(ctx, out, { time: time + 0.12, freq: midiToFreq(midi + 7), duration: 0.45, gain: spec.gain * 0.7, type: 'sine', filterHz: 6000, pan });
 }
 
-function synthSpec(card: Card) {
-  const s = `${card.column} ${card.status} ${card.agent}`.toLowerCase();
-  if (s.includes('block') || s.includes('guardian')) return { type: 'triangle' as OscillatorType, octave: 2, gain: 0.026, duration: 0.7, filterHz: 420, rhythm: 'drone' };
-  if (s.includes('retry') || s.includes('backoff')) return { type: 'sawtooth' as OscillatorType, octave: 3, gain: 0.028, duration: 0.16, filterHz: 900, rhythm: 'retry' };
-  if (s.includes('review')) return { type: 'triangle' as OscillatorType, octave: 4, gain: 0.024, duration: 0.32, filterHz: 2400, rhythm: 'review' };
-  if (s.includes('done') || s.includes('finish')) return { type: 'sine' as OscillatorType, octave: 5, gain: 0.024, duration: 0.42, filterHz: 6000, rhythm: 'cadence' };
-  if (s.includes('progress') || s.includes('run') || s.includes('builder')) return { type: 'square' as OscillatorType, octave: 4, gain: 0.022, duration: 0.13, filterHz: 1700, rhythm: 'arpeggio' };
+function scheduleIdleVoice(ctx: AudioContext, out: AudioNode, musician: IdleMusician, index: number, total: number, scale: number[], step: number, time: number) {
+  const spec = synthSpec({
+    column: 'Ready',
+    status: musician.status,
+    agent: musician.agent,
+    instrumentName: musician.instrumentName,
+    section: musician.section
+  });
+  if (!shouldPlay(idleRhythmFor(spec.rhythm), step, index)) return;
+  const seed = hashString(musician.id);
+  const degree = (step + index + seed) % scale.length;
+  const midi = 36 + spec.octave * 12 + scale[degree] + (index % 2 === 0 ? 0 : 7);
+  const pan = total <= 1 ? 0 : -0.7 + (index / (total - 1)) * 1.4;
+  playSynthNote(ctx, out, { time, freq: midiToFreq(midi), duration: spec.duration * 1.35, gain: spec.gain * 0.45, type: spec.type, filterHz: spec.filterHz, pan });
+}
+
+function synthSpec(voice: { column?: string; status: string; agent: string; instrumentName?: string; section?: string }) {
+  const state = `${voice.column || ''} ${voice.status} ${voice.agent}`.toLowerCase();
+  const instrument = `${voice.instrumentName || ''} ${voice.section || ''}`.toLowerCase();
+  if (state.includes('block') || state.includes('guardian')) return { type: 'triangle' as OscillatorType, octave: 2, gain: 0.026, duration: 0.7, filterHz: 420, rhythm: 'drone' };
+  if (state.includes('retry') || state.includes('backoff')) return { type: 'sawtooth' as OscillatorType, octave: 3, gain: 0.028, duration: 0.16, filterHz: 900, rhythm: 'retry' };
+  if (instrument.includes('timpani') || instrument.includes('percussion') || instrument.includes('drum')) return { type: 'sawtooth' as OscillatorType, octave: 2, gain: 0.026, duration: 0.18, filterHz: 760, rhythm: 'retry' };
+  if (instrument.includes('piano')) return { type: 'triangle' as OscillatorType, octave: 4, gain: 0.024, duration: 0.32, filterHz: 2400, rhythm: 'review' };
+  if (instrument.includes('horn') || instrument.includes('trumpet') || instrument.includes('brass')) return { type: 'triangle' as OscillatorType, octave: 3, gain: 0.021, duration: 0.48, filterHz: 1150, rhythm: 'sparse' };
+  if (instrument.includes('clarinet') || instrument.includes('oboe') || instrument.includes('flute') || instrument.includes('woodwind')) return { type: 'triangle' as OscillatorType, octave: 4, gain: 0.017, duration: 0.3, filterHz: 2100, rhythm: 'sparse' };
+  if (instrument.includes('glockenspiel') || instrument.includes('bell')) return { type: 'sine' as OscillatorType, octave: 5, gain: 0.022, duration: 0.38, filterHz: 6200, rhythm: 'cadence' };
+  if (state.includes('review') || state.includes('judge')) return { type: 'triangle' as OscillatorType, octave: 4, gain: 0.024, duration: 0.32, filterHz: 2400, rhythm: 'review' };
+  if (state.includes('done') || state.includes('finish')) return { type: 'sine' as OscillatorType, octave: 5, gain: 0.024, duration: 0.42, filterHz: 6000, rhythm: 'cadence' };
+  if (state.includes('progress') || state.includes('run') || state.includes('builder') || instrument.includes('violin') || instrument.includes('viola') || instrument.includes('strings')) return { type: 'square' as OscillatorType, octave: 4, gain: 0.022, duration: 0.13, filterHz: 1700, rhythm: 'arpeggio' };
   return { type: 'sine' as OscillatorType, octave: 4, gain: 0.014, duration: 0.22, filterHz: 3000, rhythm: 'sparse' };
+}
+
+function idleRhythmFor(rhythm: string) {
+  if (rhythm === 'retry') return 'idle-pulse';
+  if (rhythm === 'cadence') return 'idle-cadence';
+  return 'idle';
 }
 
 function shouldPlay(rhythm: string, step: number, index: number) {
@@ -512,6 +602,9 @@ function shouldPlay(rhythm: string, step: number, index: number) {
   if (rhythm === 'review') return step % 4 === index % 2;
   if (rhythm === 'cadence') return step % 8 === index % 2;
   if (rhythm === 'arpeggio') return step % 2 === index % 2;
+  if (rhythm === 'idle-pulse') return step % 10 === index % 5;
+  if (rhythm === 'idle-cadence') return step % 16 === index % 4;
+  if (rhythm === 'idle') return step % 12 === index % 6;
   return step % 6 === index % 6;
 }
 
@@ -539,16 +632,20 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
 
   return kanban.columns.flatMap(column =>
     column.cards.map((raw, i) => {
+      const rawRecord = raw as Record<string, unknown>;
       const backendId = raw.issue_id || raw.id || raw.linear_identifier || raw.identifier || `${column.id}-${i}`;
       const identifier = raw.linear_identifier || raw.identifier || backendId;
-      const status = String(raw.operator_status || raw.status || raw.last_event || raw.state || column.id || 'ready');
+      const phase = stringField(rawRecord, 'phase') || stringField(rawRecord, 'stage') || undefined;
+      const status = String(raw.operator_status || phase || raw.status || raw.last_event || raw.state || column.id || 'ready');
       const normalizedColumn = normalizeColumn(column.title || column.id);
 
       const turns = raw.turn_count || raw.attempt || 0;
       const tokens = raw.tokens?.total_tokens || 0;
       const priority = raw.priority ?? undefined;
-      const agent = liveAgentFor(normalizedColumn, status);
-      const section = sectionFor(normalizedColumn, status, raw.labels);
+      const assignedProfile = agentProfileFromCard(raw);
+      const agent = assignedProfile?.name || stringField(rawRecord, 'agent_name') || liveAgentFor(normalizedColumn, status);
+      const section = assignedProfile?.section || stringField(rawRecord, 'agent_section') || sectionFor(normalizedColumn, status, raw.labels);
+      const instrumentName = assignedProfile?.instrument_name || stringField(rawRecord, 'instrument_name') || instrumentNameFor(section, agent, status);
 
       return {
         id: `${column.id}-${backendId}`,
@@ -561,10 +658,15 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
         turns,
         tokens,
         priority,
+        agentProfileId: assignedProfile?.id || stringField(rawRecord, 'agent_profile_id'),
+        agentRole: assignedProfile?.role || stringField(rawRecord, 'agent_role'),
+        agentProfileStatus: assignedProfile?.status || stringField(rawRecord, 'agent_profile_status'),
+        phase,
+        stage: stringField(rawRecord, 'stage') || phase,
         message: raw.operator_summary || raw.last_message || raw.error || undefined,
         retry: raw.due_at || undefined,
         movement: movementFor(normalizedColumn, status),
-        instrumentName: instrumentNameFor(section, agent, status),
+        instrumentName,
         section,
         intensity: intensityFor(tokens, turns, priority),
         source: 'live' as const,
@@ -574,14 +676,42 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
   );
 }
 
+function agentProfileFromCard(raw: z.infer<typeof KanbanCardSchema>) {
+  const profile = raw.agent_profile;
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
+  const value = profile as Record<string, unknown>;
+  const id = stringField(value, 'id');
+  const name = stringField(value, 'name');
+  if (!id && !name) return null;
+
+  return {
+    id,
+    name: name || id,
+    role: stringField(value, 'role') || 'Agent',
+    status: stringField(value, 'status') || 'idle',
+    section: stringField(value, 'section') || 'Strings',
+    instrument_name: stringField(value, 'instrument_name') || stringField(value, 'instrumentName') || 'Violin'
+  };
+}
+
+function stringField(value: Record<string, unknown>, key: string) {
+  const field = value[key];
+  return typeof field === 'string' && field.trim() ? field : '';
+}
+
 
 type CodexAuthPayload = {
   available?: boolean;
+  cli_available?: boolean;
+  connected?: boolean;
   authenticated?: boolean;
+  state?: string;
   status?: string;
   message?: string;
   version?: string;
+  cli_version?: string;
   command?: string;
+  configured_command?: string;
   login_command?: string;
   stdout?: string;
   stderr?: string;
@@ -603,32 +733,196 @@ type BackendRuntimePayload = {
   [key: string]: unknown;
 };
 
-function useBackendRuntime() {
+const ProviderSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  active: z.boolean().default(false),
+  default: z.boolean().default(false),
+  available: z.boolean().default(false),
+  selectable: z.boolean().optional(),
+  configured: z.boolean().optional(),
+  implemented: z.boolean().optional(),
+  authenticated: z.boolean().optional(),
+  status: z.string().default('unknown'),
+  command: z.string().nullable().optional(),
+  endpoint: z.string().nullable().optional(),
+  auth_source: z.string().nullable().optional(),
+  blocked_reason: z.string().nullable().optional(),
+  message: z.string().nullable().optional()
+}).passthrough();
+
+const ProviderStatusSchema = z.object({
+  active_provider: z.string().default('direct_codex'),
+  default_provider: z.string().default('direct_codex'),
+  contract_version: z.number().default(1),
+  provider_contract: z.array(z.string()).default(['direct_codex', 'agent_zero']),
+  providers: z.array(ProviderSchema).default([]),
+  status: z.string().default('unknown'),
+  generated_at: z.string().optional()
+}).passthrough();
+
+type ProviderStatusPayload = z.infer<typeof ProviderStatusSchema>;
+type Provider = z.infer<typeof ProviderSchema>;
+
+type OrchestrationEvent = {
+  id: string;
+  sequence?: number;
+  type: string;
+  provider?: string;
+  source?: string;
+  occurred_at?: string;
+  issue_id?: string;
+  issue_identifier?: string;
+  stage?: string;
+  status?: string;
+  action?: string;
+  message?: string;
+  data?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+type OrchestrationEventStatus = 'connecting' | 'live' | 'reconnecting' | 'unavailable';
+
+const EventHistorySchema = z.object({
+  events: z.array(z.any()).default([])
+}).passthrough();
+
+function useBackendRuntime(enabled = true) {
   return useQuery({
     queryKey: ['backendRuntime'],
     queryFn: async () => invoke<BackendRuntimePayload>('backend_status'),
     refetchInterval: 3_000,
-    retry: 1
+    retry: 1,
+    enabled
   });
 }
 
-function useCodexAuth(base: string) {
+function useCodexAuth(base: string, enabled = true) {
   return useQuery({
     queryKey: ['codexAuth', base],
     queryFn: async () => api<CodexAuthPayload>(base, '/api/codex/auth/status', undefined, 7_500),
-    refetchInterval: 20_000
+    refetchInterval: 20_000,
+    enabled
   });
 }
 
+function useProviderStatus(base: string, enabled = true) {
+  return useQuery<ProviderStatusPayload>({
+    queryKey: ['providerStatus', base],
+    queryFn: async () => ProviderStatusSchema.parse(await api(base, '/api/orchestration/providers')),
+    refetchInterval: 20_000,
+    enabled
+  });
+}
+
+function useOrchestrationEvents(base: string, enabled = true) {
+  const [events, setEvents] = useState<OrchestrationEvent[]>([]);
+  const [status, setStatus] = useState<OrchestrationEventStatus>('connecting');
+
+  useEffect(() => {
+    if (!enabled) {
+      setStatus('connecting');
+      setEvents([]);
+      return;
+    }
+
+    let cancelled = false;
+    setStatus('connecting');
+    setEvents([]);
+
+    api(base, '/api/events', undefined, 5_000)
+      .then(payload => {
+        if (cancelled) return;
+        const parsed = EventHistorySchema.parse(payload);
+        setEvents(parsed.events.map(normalizeOrchestrationEvent).filter(isOrchestrationEvent).slice(-100));
+      })
+      .catch(() => {
+        if (!cancelled) setStatus('unavailable');
+      });
+
+    const source = new EventSource(joinApiUrl(base, '/api/events/stream'));
+
+    source.onopen = () => {
+      if (!cancelled) setStatus('live');
+    };
+
+    source.onmessage = message => {
+      if (cancelled) return;
+
+      try {
+        const event = normalizeOrchestrationEvent(JSON.parse(message.data));
+        if (!event) return;
+        setStatus('live');
+        setEvents(current => [...current.filter(item => item.id !== event.id), event].slice(-100));
+      } catch {
+        // Ignore malformed stream messages; the backend JSON history remains authoritative.
+      }
+    };
+
+    source.onerror = () => {
+      if (!cancelled) setStatus(current => (current === 'live' ? 'reconnecting' : 'unavailable'));
+    };
+
+    return () => {
+      cancelled = true;
+      source.close();
+    };
+  }, [base, enabled]);
+
+  return {
+    events,
+    status,
+    lastEvent: events[events.length - 1],
+    connected: status === 'live'
+  };
+}
+
+function normalizeOrchestrationEvent(raw: unknown): OrchestrationEvent | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const event = raw as Record<string, unknown>;
+  const id = typeof event.id === 'string' ? event.id : undefined;
+  const type = typeof event.type === 'string' ? event.type : undefined;
+  if (!id || !type) return null;
+  return event as OrchestrationEvent;
+}
+
+function isOrchestrationEvent(event: OrchestrationEvent | null): event is OrchestrationEvent {
+  return event !== null;
+}
+
+function joinApiUrl(base: string, path: string) {
+  const trimmed = base.trim().replace(/\/+$/, '');
+  return `${trimmed}${path}`;
+}
+
+function providerLabel(provider?: string) {
+  if (provider === 'agent_zero') return 'Agent Zero';
+  if (provider === 'direct_codex') return 'Direct Codex';
+  return 'Symphony';
+}
+
+function apiModeLabel(mode: ApiMode) {
+  if (mode === 'desktop') return 'desktop bundled backend';
+  if (mode === 'proxy') return 'dev proxy';
+  if (mode === 'override') return 'manual override';
+  if (mode === 'desktop-error') return 'desktop backend failed';
+  return 'starting desktop backend';
+}
 
 function App() {
+  const [desktopBridgeAvailable] = useState(() => hasTauriBridge());
   const [tab, setTab] = useState<Tab>('console');
-  const [base, setBase] = useState(getApiBase());
-  const state = useSymphonyState(base);
-  const kanban = useKanban(base);
-  const profilesQuery = useAgentProfiles(base);
-  const codexAuth = useCodexAuth(base);
-  const backendRuntime = useBackendRuntime();
+  const [base, setBase] = useState(() => getApiBase());
+  const [apiMode, setApiMode] = useState<ApiMode>(() => getApiBase() ? 'override' : desktopBridgeAvailable ? 'initializing' : 'proxy');
+  const [desktopStartupError, setDesktopStartupError] = useState<string | null>(null);
+  const apiReady = apiMode !== 'initializing' && apiMode !== 'desktop-error';
+  const state = useSymphonyState(base, apiReady);
+  const kanban = useKanban(base, apiReady);
+  const profilesQuery = useAgentProfiles(base, apiReady);
+  const codexAuth = useCodexAuth(base, apiReady);
+  const orchestrationEvents = useOrchestrationEvents(base, apiReady);
+  const providerStatus = useProviderStatus(base, apiReady);
+  const backendRuntime = useBackendRuntime(desktopBridgeAvailable);
   const [debugPayload, setDebugPayload] = useState<string | null>(null);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const cards = useMemo(() => makeCardsFromKanban(kanban.data), [kanban.data]);
@@ -640,30 +934,71 @@ function App() {
   const offline = hasPollingError && !hasLiveBackendData;
   const reconnecting = hasPollingError && hasLiveBackendData;
   const [audioEnabled, setAudioEnabled] = useState(false);
-  const orchestraAudio = useAgentOrchestra({ enabled: audioEnabled, cards, offline });
+  const orchestraAudio = useAgentOrchestra({ enabled: audioEnabled, cards, idleMusicians, offline });
   const selectedCard = cards.find(card => card.id === selectedCardId) || cards[0];
 
+  const invalidateLiveData = () => {
+    queryClient.invalidateQueries({ queryKey: ['state'] });
+    queryClient.invalidateQueries({ queryKey: ['kanban'] });
+  };
+
   useEffect(() => {
+    let cancelled = false;
     const saved = localStorage.getItem('symphony.apiBase');
-    if (saved && saved.trim()) return;
+    if (saved && saved.trim()) {
+      setApiMode('override');
+      setDesktopStartupError(null);
+      return;
+    }
+
+    if (!desktopBridgeAvailable) {
+      setApiMode('proxy');
+      return;
+    }
+
     invoke<BackendRuntimePayload>('ensure_backend_ready')
       .then(status => {
-        if (status?.baseUrl) setBase(status.baseUrl);
+        if (cancelled) return;
+        if (status?.baseUrl) {
+          setBase(status.baseUrl);
+          setApiMode('desktop');
+          setDesktopStartupError(null);
+        }
       })
-      .catch(() => {
-        // Browser/Vite dev mode uses the same-origin proxy when no Tauri bridge is present.
+      .catch(error => {
+        if (cancelled) return;
+        setApiMode('desktop-error');
+        setDesktopStartupError(error instanceof Error ? error.message : String(error));
       });
-  }, []);
+
+    return () => { cancelled = true; };
+  }, [desktopBridgeAvailable]);
 
   useEffect(() => {
     if (selectedCardId && cards.some(card => card.id === selectedCardId)) return;
     setSelectedCardId(cards[0]?.id ?? null);
   }, [cards, selectedCardId]);
 
-  const invalidateLiveData = () => {
-    queryClient.invalidateQueries({ queryKey: ['state', base] });
-    queryClient.invalidateQueries({ queryKey: ['kanban', base] });
-  };
+  useEffect(() => {
+    const type = orchestrationEvents.lastEvent?.type;
+    if (!type) return;
+
+    if (
+      [
+        'tracker.poll.completed',
+        'issue.stage.started',
+        'issue.stage.blocked',
+        'issue.execution.completed',
+        'issue.execution.failed',
+        'issue.retry.scheduled',
+        'operator.issue.move.accepted',
+        'operator.issue.action.accepted'
+      ].includes(type)
+    ) {
+      invalidateLiveData();
+    }
+  }, [orchestrationEvents.lastEvent?.id]);
+
   const refresh = useMutation({
     mutationFn: () => api(base, '/api/v1/refresh', { method: 'POST', body: '{}' }),
     onSuccess: invalidateLiveData
@@ -709,32 +1044,80 @@ function App() {
     mutationFn: () => api<CodexAuthPayload>(base, '/api/codex/auth/logout', { method: 'POST', body: '{}' }, 10_000),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['codexAuth', base] })
   });
+  const selectProvider = useMutation({
+    mutationFn: async (provider: string) =>
+      ProviderStatusSchema.parse(
+        await api(base, '/api/orchestration/providers/select', {
+          method: 'POST',
+          body: JSON.stringify({ provider })
+        })
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['providerStatus'] });
+      queryClient.invalidateQueries({ queryKey: ['state'] });
+      queryClient.invalidateQueries({ queryKey: ['kanban'] });
+    }
+  });
   const startBundledBackend = useMutation({
     mutationFn: () => invoke<BackendRuntimePayload>('ensure_backend_ready'),
     onSuccess: status => {
-      if (status?.baseUrl) setBase(status.baseUrl);
+      if (status?.baseUrl) {
+        setBase(status.baseUrl);
+        setApiMode('desktop');
+        setDesktopStartupError(null);
+      }
       queryClient.invalidateQueries({ queryKey: ['backendRuntime'] });
       invalidateLiveData();
+    },
+    onError: error => {
+      setApiMode('desktop-error');
+      setDesktopStartupError(error instanceof Error ? error.message : String(error));
+      queryClient.invalidateQueries({ queryKey: ['backendRuntime'] });
     }
   });
   const restartBundledBackend = useMutation({
     mutationFn: () => invoke<BackendRuntimePayload>('backend_restart'),
     onSuccess: status => {
-      if (status?.baseUrl) setBase(status.baseUrl);
+      if (status?.baseUrl) {
+        setBase(status.baseUrl);
+        setApiMode('desktop');
+        setDesktopStartupError(null);
+      }
       queryClient.invalidateQueries({ queryKey: ['backendRuntime'] });
       invalidateLiveData();
+    },
+    onError: error => {
+      setApiMode('desktop-error');
+      setDesktopStartupError(error instanceof Error ? error.message : String(error));
+      queryClient.invalidateQueries({ queryKey: ['backendRuntime'] });
     }
   });
   const backendLogs = useMutation({
     mutationFn: () => invoke<{ logPath?: string; text: string }>('backend_logs', { maxBytes: 65536 })
   });
   const saveBase = (v: string) => {
-    localStorage.setItem('symphony.apiBase', v);
-    setBase(v.trim());
+    const next = v.trim();
+    if (next) {
+      localStorage.setItem('symphony.apiBase', next);
+      setApiMode('override');
+    } else {
+      localStorage.removeItem('symphony.apiBase');
+      if (desktopBridgeAvailable) {
+        setApiMode('initializing');
+        setDesktopStartupError(null);
+        startBundledBackend.mutate();
+      } else {
+        setApiMode('proxy');
+        setDesktopStartupError(null);
+      }
+    }
+    setBase(next);
     queryClient.invalidateQueries();
   };
 
-  const actionBusy = refresh.isPending || debugIssue.isPending || moveIssue.isPending || issueAction.isPending || saveAgentProfile.isPending || deleteAgentProfile.isPending || startCodexLogin.isPending || checkCodexAuth.isPending || logoutCodex.isPending || startBundledBackend.isPending || restartBundledBackend.isPending;
+  const apiStarting = apiMode === 'initializing';
+  const apiStartupFailed = apiMode === 'desktop-error';
+  const actionBusy = !apiReady || refresh.isPending || debugIssue.isPending || moveIssue.isPending || issueAction.isPending || saveAgentProfile.isPending || deleteAgentProfile.isPending || startCodexLogin.isPending || checkCodexAuth.isPending || logoutCodex.isPending || selectProvider.isPending || startBundledBackend.isPending || restartBundledBackend.isPending;
 
   return (
     <div className="concertShell">
@@ -761,27 +1144,33 @@ function App() {
           <PixelPortrait role="maestroPortrait" label="MC" />
           <div>
             <b>Maestro</b>
-            <span>{offline ? 'awaiting orchestra' : reconnecting ? 'holding last cue' : 'conducting live'}</span>
+            <span>{apiStarting ? 'starting desktop backend' : apiStartupFailed ? 'backend needs attention' : offline ? 'awaiting orchestra' : reconnecting ? 'holding last cue' : 'conducting live'}</span>
           </div>
         </div>
         <div className="sidebarFooter">
-          <span className={offline ? 'statusDot offline' : reconnecting ? 'statusDot reconnecting' : 'statusDot online'} />
-          {offline ? 'Backend unavailable' : reconnecting ? 'Reconnecting… live cache held' : 'Connected via API'}
+          <span className={apiStarting || apiStartupFailed || offline ? 'statusDot offline' : reconnecting ? 'statusDot reconnecting' : 'statusDot online'} />
+          {apiStarting ? 'Starting desktop backend' : apiStartupFailed ? 'Desktop backend failed' : offline ? 'Backend unavailable' : reconnecting ? 'Reconnecting… live cache held' : 'Connected via API'}
         </div>
       </aside>
 
       <main className="concertWorkspace">
         <ConcertHeader
-          offline={offline}
+          offline={offline || apiStartupFailed}
+          apiStarting={apiStarting}
           reconnecting={reconnecting}
+          eventStatus={orchestrationEvents.status}
+          lastEvent={orchestrationEvents.lastEvent}
+          eventCount={orchestrationEvents.events.length}
           onRefresh={() => refresh.mutate()}
-          busy={refresh.isPending}
+          busy={actionBusy}
           audioEnabled={audioEnabled}
           onToggleAudio={() => setAudioEnabled(value => !value)}
           orchestraAudio={orchestraAudio}
         />
-        <MetricsStrip state={state.data} online={!offline} reconnecting={reconnecting} />
-        {offline && <OfflineBanner base={base} />}
+        <MetricsStrip state={state.data} online={!offline && !apiStarting && !apiStartupFailed} reconnecting={reconnecting} />
+        {apiStarting && <StartupBanner />}
+        {apiStartupFailed && <DesktopBackendErrorBanner message={desktopStartupError} />}
+        {offline && !apiStartupFailed && <OfflineBanner base={base} />}
         {reconnecting && <ReconnectBanner base={base} />}
         <section className="contentArea" aria-live="polite">
           {tab === 'console' && (
@@ -814,7 +1203,14 @@ function App() {
               onDeleteProfile={id => deleteAgentProfile.mutateAsync(id)}
             />
           )}
-          {tab === 'workflow' && <WorkflowPanel base={base} state={state.data} cards={cards} />}
+          {tab === 'workflow' && <WorkflowPanel base={base} state={state.data} cards={cards} enabled={apiReady} />}
+          {tab === 'ledger' && (
+            <EventLedger
+              events={orchestrationEvents.events}
+              status={orchestrationEvents.status}
+              providerStatus={providerStatus.data}
+            />
+          )}
           {tab === 'safety' && <SafetyPanel />}
           {tab === 'settings' && (
             <SettingsPanel
@@ -824,14 +1220,22 @@ function App() {
               codexLoading={codexAuth.isLoading}
               codexError={codexAuth.error instanceof Error ? codexAuth.error.message : codexAuth.isError ? 'Unable to reach Codex auth endpoint.' : undefined}
               codexBusy={startCodexLogin.isPending || checkCodexAuth.isPending || logoutCodex.isPending}
+              providerStatus={providerStatus.data}
+              providerError={providerStatus.error instanceof Error ? providerStatus.error.message : providerStatus.isError ? 'Unable to reach provider endpoint.' : undefined}
+              providerSelectError={selectProvider.error instanceof Error ? selectProvider.error.message : undefined}
+              providerBusy={selectProvider.isPending}
+              apiMode={apiMode}
+              desktopStartupError={desktopStartupError}
+              desktopBridgeAvailable={desktopBridgeAvailable}
               backendRuntime={backendRuntime.data}
-              backendRuntimeError={backendRuntime.error instanceof Error ? backendRuntime.error.message : backendRuntime.isError ? 'Tauri backend manager unavailable in browser/dev mode.' : undefined}
+              backendRuntimeError={desktopBridgeAvailable ? backendRuntime.error instanceof Error ? backendRuntime.error.message : backendRuntime.isError ? 'Tauri backend manager unavailable.' : undefined : undefined}
               backendBusy={startBundledBackend.isPending || restartBundledBackend.isPending}
               backendLogs={backendLogs.data}
               onStartBackend={() => startBundledBackend.mutate()}
               onRestartBackend={() => restartBundledBackend.mutate()}
               onRefreshBackend={() => queryClient.invalidateQueries({ queryKey: ['backendRuntime'] })}
               onLoadBackendLogs={() => backendLogs.mutate()}
+              onSelectProvider={provider => selectProvider.mutate(provider)}
               onStartCodexLogin={() => startCodexLogin.mutate()}
               onCheckCodex={() => checkCodexAuth.mutate()}
               onLogoutCodex={() => logoutCodex.mutate()}
@@ -856,7 +1260,11 @@ function App() {
 
 function ConcertHeader({
   offline,
+  apiStarting,
   reconnecting,
+  eventStatus,
+  lastEvent,
+  eventCount,
   onRefresh,
   busy,
   audioEnabled,
@@ -864,21 +1272,40 @@ function ConcertHeader({
   orchestraAudio
 }: {
   offline: boolean;
+  apiStarting: boolean;
   reconnecting: boolean;
+  eventStatus: OrchestrationEventStatus;
+  lastEvent?: OrchestrationEvent;
+  eventCount: number;
   onRefresh: () => void;
   busy: boolean;
   audioEnabled: boolean;
   onToggleAudio: () => void;
   orchestraAudio: OrchestraAudioState;
 }) {
+  const eventLive = eventStatus === 'live';
+  const eventReconnecting = eventStatus === 'reconnecting';
+  const eventStatusLabel = apiStarting
+    ? 'events waiting for backend'
+    : eventLive
+    ? `${providerLabel(lastEvent?.provider)} events live`
+    : eventReconnecting
+      ? 'events reconnecting'
+      : eventStatus === 'connecting'
+        ? 'events connecting'
+        : 'events unavailable';
+
   return (
     <header className="concertHeader pixelPanel">
       <div>
         <p className="eyebrow">Live score for autonomous work</p>
         <h1>Conductor View</h1>
-        <p className="subtle">{offline ? 'The pit is quiet until the backend returns' : reconnecting ? 'Holding the last live score while the backend reconnects' : 'Real Linear issues conducted by Codex agents'} · musicians, movements, and generated score</p>
+        <p className="subtle">{apiStarting ? 'Starting the bundled desktop backend' : offline ? 'The pit is quiet until the backend returns' : reconnecting ? 'Holding the last live score while the backend reconnects' : 'Real Linear issues conducted by Codex agents'} · musicians, movements, and generated score</p>
       </div>
       <div className="actions">
+        <span className={`pill eventPill ${eventLive ? 'active' : eventReconnecting ? 'warning' : 'neutral'}`} title={lastEvent?.message || 'Provider-neutral orchestration event stream'}>
+          <Activity size={14} /> {eventStatusLabel} · {eventCount}
+        </span>
         <span className={`pill audioPill ${audioEnabled ? 'active' : 'neutral'}`} title={orchestraAudio.error || 'Generated from live agent cards'}>
           <Waves size={14} /> {audioEnabled ? `${orchestraAudio.activeVoices} voices` : 'orchestra muted'}
         </span>
@@ -913,6 +1340,24 @@ function MetricsStrip({ state, online, reconnecting }: { state?: SymphonyState; 
   );
 }
 
+function StartupBanner() {
+  return (
+    <div className="banner startupBanner pixelPanel">
+      <Server size={18} />
+      <span>Starting the managed Symphony backend for this desktop window. API reads and agent actions will enable when the local runtime is healthy.</span>
+    </div>
+  );
+}
+
+function DesktopBackendErrorBanner({ message }: { message: string | null }) {
+  return (
+    <div className="banner errorBanner pixelPanel">
+      <AlertTriangle size={18} />
+      <span>Desktop backend startup failed{message ? `: ${message}` : '.'} Open Settings to restart the bundled backend or inspect logs.</span>
+    </div>
+  );
+}
+
 function OfflineBanner({ base }: { base: string }) {
   return (
     <div className="banner pixelPanel">
@@ -931,7 +1376,9 @@ function ReconnectBanner({ base }: { base: string }) {
   );
 }
 
-const stationMeta = [
+type StageStation = { column: string; id: string; label: string; kind: string; x: number; y: number };
+
+const stationMeta: StageStation[] = [
   { column: 'Ready', id: 'queue', label: 'Score Queue', kind: 'queue', x: 17, y: 70 },
   { column: 'In Progress', id: 'strings', label: 'Strings / Active', kind: 'active', x: 38, y: 36 },
   { column: 'Human Review', id: 'podium', label: 'Conductor Review', kind: 'review', x: 61, y: 35 },
@@ -939,6 +1386,25 @@ const stationMeta = [
   { column: 'Blocked', id: 'dissonance', label: 'Dissonance', kind: 'blocked', x: 24, y: 39 },
   { column: 'Done', id: 'finale', label: 'Finale Archive', kind: 'done', x: 86, y: 82 }
 ];
+
+const sectionStations: Record<string, StageStation> = {
+  Strings: stationMeta[1],
+  Woodwinds: { column: 'In Progress', id: 'woodwinds-active', label: 'Woodwinds / Active', kind: 'active', x: 31, y: 54 },
+  Brass: { column: 'In Progress', id: 'brass-active', label: 'Brass / Active', kind: 'active', x: 68, y: 53 },
+  Percussion: { column: 'Retry', id: 'percussion-active', label: 'Percussion / Active', kind: 'retry', x: 77, y: 68 },
+  Piano: { column: 'Human Review', id: 'piano-active', label: 'Piano / Judge', kind: 'review', x: 55, y: 61 },
+  Bells: { column: 'Done', id: 'bells-active', label: 'Bells / Finale', kind: 'done', x: 86, y: 72 }
+};
+
+const renderedStations: StageStation[] = [
+  ...stationMeta,
+  ...Object.values(sectionStations).filter(station => !stationMeta.some(base => base.id === station.id))
+];
+
+function stationForCard(card: Card) {
+  if (card.agentProfileId && sectionStations[card.section]) return sectionStations[card.section];
+  return stationMeta.find(item => item.column === card.column) || stationMeta[0];
+}
 
 function OrchestraFloor({
   cards,
@@ -965,26 +1431,41 @@ function OrchestraFloor({
   orchestraAudio: OrchestraAudioState;
   onAction: (id: string, action: string) => void;
 }) {
-  const counts = Object.fromEntries(stationMeta.map(station => [station.column, cards.filter(card => card.column === station.column).length]));
+  const counts = Object.fromEntries(
+    renderedStations.map(station => [
+      station.id,
+      cards.filter(card => stationForCard(card).id === station.id).length
+    ])
+  );
   const movements = movementSummary(cards);
 
   return (
     <div className="orchestraDeck">
       <section className="stageMap pixelPanel" aria-label="Animated orchestra floor">
         <div className="stageBackdrop" aria-hidden="true">
-          <div className="backWall"><span className="window" /><span className="window" /><span className="poster">♬ CODEX HALL</span></div>
+          <div className="operaCurtain curtainLeft" />
+          <div className="operaCurtain curtainRight" />
+          <div className="backWall">
+            <span className="goldColumn columnLeft" />
+            <span className="goldColumn columnRight" />
+            <span className="balcony balconyLeft"><i /><i /><i /></span>
+            <span className="balcony balconyCenter"><i /><i /><i /><i /></span>
+            <span className="balcony balconyRight"><i /><i /><i /></span>
+            <span className="prosceniumArch"><b>CODEX HALL</b><small>GRAND STAGE</small></span>
+            <span className="chandelier"><i /><i /><i /><i /></span>
+          </div>
           <div className="stageFloor" />
           <div className="pitRail" />
         </div>
         <MovementRibbon movements={movements} activeVoices={orchestraAudio.activeVoices} />
         <Conductor active={cards.length > 0} />
         <CueLines cards={cards} />
-        {stationMeta.map(station => (
-          <Station key={station.id} station={station} count={counts[station.column] || 0} />
+        {renderedStations.map(station => (
+          <Station key={station.id} station={station} count={counts[station.id] || 0} />
         ))}
         {cards.length === 0 && <EmptyHouse />}
         {cards.map((card, index) => {
-          const station = stationMeta.find(item => item.column === card.column) || stationMeta[0];
+          const station = stationForCard(card);
           return (
             <PerformerCard
               key={card.id}
@@ -1040,7 +1521,7 @@ function CueLines({ cards }: { cards: Card[] }) {
   return (
     <svg className="cueLines" aria-hidden="true" viewBox="0 0 100 100" preserveAspectRatio="none">
       {cards.slice(0, 8).map((card, index) => {
-        const station = stationMeta.find(item => item.column === card.column) || stationMeta[0];
+        const station = stationForCard(card);
         return <path key={card.id} className={`cueLine cue-${statusClass(card.status)}`} d={`M50 43 Q${(50 + station.x) / 2} ${28 + index * 2} ${station.x} ${station.y + 5}`} />;
       })}
     </svg>
@@ -1059,7 +1540,7 @@ function Conductor({ active }: { active: boolean }) {
   );
 }
 
-function Station({ station, count }: { station: typeof stationMeta[number]; count: number }) {
+function Station({ station, count }: { station: StageStation; count: number }) {
   return (
     <button className={`station station-${station.kind}`} style={{ left: `${station.x}%`, top: `${station.y}%` }}>
       <span className="standTop"><FileText size={15} /></span>
@@ -1092,7 +1573,7 @@ function PerformerCard({
   onArchive
 }: {
   card: Card;
-  station: typeof stationMeta[number];
+  station: StageStation;
   index: number;
   selected: boolean;
   busy: boolean;
@@ -1104,7 +1585,7 @@ function PerformerCard({
 }) {
   const offsetX = ((index % 3) - 1) * 7;
   const offsetY = Math.floor(index % 6 / 3) * 9;
-  const instrument = instrumentFor(card.agent, card.status);
+  const instrument = instrumentFor(card.agent, card.status, card.instrumentName);
   const status = statusClass(card.status);
   const chair = (hashString(card.backendId) % 4) + 1;
 
@@ -1122,7 +1603,7 @@ function PerformerCard({
         <span className="ticket">{card.identifier}</span>
         <b>{card.title}</b>
         <small>{card.instrumentName} · {card.section} · chair {chair}</small>
-        <small>{card.agent} · {card.turns} turns · {card.tokens.toLocaleString()} notes</small>
+        <small>{card.agent}{card.agentRole ? ` · ${card.agentRole}` : ''} · {card.turns} turns · {card.tokens.toLocaleString()} notes</small>
         <div className="tokenBar" aria-label="Token usage"><i style={{ width: `${card.intensity}%` }} /></div>
         <div className="cardActions" onClick={event => event.stopPropagation()}>
           <button className="miniButton" onClick={onDebug} disabled={busy}><Bug size={12} />Debug</button>
@@ -1136,13 +1617,11 @@ function PerformerCard({
 }
 
 function IdleMusicianCard({ musician, index }: { musician: IdleMusician; index: number }) {
-  const station = stationMeta[0];
-  const offsetX = ((index % 4) - 1.5) * 6;
-  const offsetY = Math.floor(index / 4) * 8;
+  const seat = idleSeatFor(musician.section, index);
   return (
-    <article className={`performer idlePerformer ${musician.status === 'disabled' ? 'disabled' : ''}`} style={{ left: `${station.x + offsetX}%`, top: `${station.y + offsetY + 17}%` }}>
+    <article className={`performer idlePerformer ${musician.status === 'disabled' ? 'disabled' : ''}`} style={{ left: `${seat.x}%`, top: `${seat.y}%` }}>
       <div className="performerShadow" />
-      <div className={`pixelPerson musician idle section-${musician.section.toLowerCase()}`}><span className="head" /><span className="body" /><span className="legs" /><span className="instrument">{instrumentFor(musician.agent, musician.status)}</span></div>
+      <div className={`pixelPerson musician idle section-${musician.section.toLowerCase()}`}><span className="head" /><span className="body" /><span className="legs" /><span className="instrument">{instrumentFor(musician.agent, musician.status, musician.instrumentName)}</span></div>
       <div className="taskSlip idleSlip">
         <span className="ticket">{musician.status.toUpperCase()}</span>
         <b>{musician.agent}</b>
@@ -1151,6 +1630,21 @@ function IdleMusicianCard({ musician, index }: { musician: IdleMusician; index: 
       </div>
     </article>
   );
+}
+
+function idleSeatFor(section: string, index: number) {
+  const seats: Record<string, { x: number; y: number }> = {
+    Strings: { x: 41, y: 65 },
+    Woodwinds: { x: 31, y: 54 },
+    Brass: { x: 68, y: 53 },
+    Percussion: { x: 77, y: 68 },
+    Piano: { x: 55, y: 61 },
+    Bells: { x: 86, y: 72 }
+  };
+  const seat = seats[section] || seats.Strings;
+  const offsetX = ((index % 3) - 1) * 4;
+  const offsetY = Math.floor(index / 3) * 5;
+  return { x: seat.x + offsetX, y: seat.y + offsetY };
 }
 
 function FloatingNotes({ cards }: { cards: Card[] }) {
@@ -1245,18 +1739,20 @@ function MovementTools({ card, busy, onDebug, onMove, onAction }: { card: Card; 
 }
 
 
-function instrumentFor(agent: string, status: string) {
-  const s = `${agent} ${status}`.toLowerCase();
-  if (s.includes('backoff') || s.includes('retry')) return '🥁';
-  if (s.includes('review')) return '🎹';
-  if (s.includes('guardian') || s.includes('block')) return '📯';
-  if (s.includes('finish') || s.includes('done')) return '🎺';
-  if (s.includes('builder') || s.includes('run')) return '🎻';
+function instrumentFor(agent: string, status: string, instrumentName = '') {
+  const s = `${agent} ${status} ${instrumentName}`.toLowerCase();
+  if (s.includes('timpani') || s.includes('drum') || s.includes('percussion') || s.includes('backoff') || s.includes('retry')) return '🥁';
+  if (s.includes('piano') || s.includes('review') || s.includes('judge')) return '🎹';
+  if (s.includes('horn') || s.includes('brass') || s.includes('guardian') || s.includes('block')) return '📯';
+  if (s.includes('trumpet') || s.includes('finish') || s.includes('done')) return '🎺';
+  if (s.includes('violin') || s.includes('viola') || s.includes('cello') || s.includes('builder') || s.includes('run')) return '🎻';
+  if (s.includes('glockenspiel') || s.includes('bell')) return '🔔';
   return '🎼';
 }
 
 function StatusPill({ status }: { status: string }) {
-  const Icon = status.includes('block') ? AlertTriangle : status.includes('done') ? CheckCircle2 : status.includes('retry') ? Clock : status.includes('execut') || status.includes('run') ? PlayCircle : CircleDot;
+  const s = status.toLowerCase();
+  const Icon = s.includes('block') ? AlertTriangle : s.includes('done') ? CheckCircle2 : s.includes('retry') ? Clock : s.includes('judge') || s.includes('review') ? BrainCircuit : s.includes('refin') || s.includes('execut') || s.includes('run') ? PlayCircle : CircleDot;
   return <span className={`pill ${statusClass(status)}`}><Icon size={13} />{status}</span>;
 }
 
@@ -1265,8 +1761,8 @@ function statusClass(status: string) {
   if (s.includes('block') || s.includes('fail') || s.includes('error')) return 'danger';
   if (s.includes('retry')) return 'warning';
   if (s.includes('done') || s.includes('complete')) return 'success';
-  if (s.includes('execut') || s.includes('run') || s.includes('ready')) return 'active';
-  if (s.includes('review')) return 'review';
+  if (s.includes('judge') || s.includes('review')) return 'review';
+  if (s.includes('refin') || s.includes('execut') || s.includes('run') || s.includes('ready')) return 'active';
   return 'neutral';
 }
 
@@ -1423,9 +1919,9 @@ function AgentProfileForm({ profile, busy, onSave, onCancel, onDelete }: { profi
   );
 }
 
-function WorkflowPanel({ base, state, cards }: { base: string; state?: SymphonyState; cards: Card[] }) {
-  const templatesQuery = useWorkflowTemplates(base);
-  const filesQuery = useWorkflowFiles(base);
+function WorkflowPanel({ base, state, cards, enabled }: { base: string; state?: SymphonyState; cards: Card[]; enabled: boolean }) {
+  const templatesQuery = useWorkflowTemplates(base, enabled);
+  const filesQuery = useWorkflowFiles(base, enabled);
   const [templateId, setTemplateId] = useState('linear_codex_judge_refiner');
   const [targetPath, setTargetPath] = useState('generated-workflow/WORKFLOW.md');
   const [overwrite, setOverwrite] = useState(false);
@@ -1456,6 +1952,8 @@ function WorkflowPanel({ base, state, cards }: { base: string; state?: SymphonyS
       setValidation(data.validation || null);
       setPreview(null);
       log(`Generated ${data.filename || 'WORKFLOW.md'} from ${data.template_id || templateId}`);
+      if (data.agent_profile_changes?.count) log(`Stage agents ready: ${data.agent_profile_changes.count} profiles created or refreshed.`);
+      queryClient.invalidateQueries({ queryKey: ['agentProfiles', base] });
     },
     onError: err => fail('Generate failed', err)
   });
@@ -1473,8 +1971,15 @@ function WorkflowPanel({ base, state, cards }: { base: string; state?: SymphonyS
   });
 
   const writeDraft = useMutation({
-    mutationFn: async () => api<Record<string, unknown>>(base, '/api/workflows', { method: 'POST', body: JSON.stringify({ path: targetPath, content: draft, overwrite }) }, 8000),
-    onSuccess: data => { setWorkflowError(null); log(`Saved ${String(data.path || targetPath)}${data.restart_required ? ' · backend restart required to activate' : ''}`); queryClient.invalidateQueries({ queryKey: ['workflowFiles', base] }); },
+    mutationFn: async () => api<Record<string, unknown>>(base, '/api/workflows', { method: 'POST', body: JSON.stringify({ path: targetPath, content: draft, template_id: templateId, overwrite }) }, 8000),
+    onSuccess: data => {
+      setWorkflowError(null);
+      log(`Saved ${String(data.path || targetPath)}${data.restart_required ? ' · backend restart required to activate' : ''}`);
+      const changes = data.agent_profile_changes as { count?: number } | undefined;
+      if (changes?.count) log(`Stage agents ready: ${changes.count} profiles created or refreshed.`);
+      queryClient.invalidateQueries({ queryKey: ['workflowFiles', base] });
+      queryClient.invalidateQueries({ queryKey: ['agentProfiles', base] });
+    },
     onError: err => fail('Save failed', err)
   });
 
@@ -1484,7 +1989,7 @@ function WorkflowPanel({ base, state, cards }: { base: string; state?: SymphonyS
     onError: err => fail('Move failed', err)
   });
 
-  const busy = generate.isPending || validateDraft.isPending || previewDraft.isPending || writeDraft.isPending || moveWorkflow.isPending;
+  const busy = !enabled || generate.isPending || validateDraft.isPending || previewDraft.isPending || writeDraft.isPending || moveWorkflow.isPending;
   const dispatchErrors = validation?.dispatch?.errors || [];
   const review = preview?.review || (validation ? { verdict: validation.valid ? 'pass' : validation.writable ? 'needs_refinement' : 'blocked', judge: { findings: validation.errors, warnings: validation.warnings } } : null);
 
@@ -1498,6 +2003,7 @@ function WorkflowPanel({ base, state, cards }: { base: string; state?: SymphonyS
           </div>
           <span className={`pill ${validation?.valid ? 'success' : validation?.writable ? 'warning' : 'idle'}`}>{validation?.valid ? 'ready to activate' : validation?.writable ? 'writable draft' : 'draft'}</span>
         </div>
+        {!enabled && <p className="formError">Desktop backend is starting; workflow operations are disabled until the local runtime is ready.</p>}
 
         <label className="workflowSelectLabel">Template
           <select value={templateId} onChange={e => setTemplateId(e.target.value)} disabled={busy || templatesQuery.isLoading}>
@@ -1533,7 +2039,7 @@ function WorkflowPanel({ base, state, cards }: { base: string; state?: SymphonyS
         <div className="panelHeader"><div><p className="eyebrow">Rehearsal Desk</p><h2>Judge / Refiner / Location</h2></div></div>
         <div className="targetPreview">
           <b>Backend-managed root</b>
-          <code>{filesQuery.data?.root || 'loading…'}</code>
+          <code>{filesQuery.data?.root || (enabled ? 'loading…' : 'waiting for desktop backend')}</code>
           <small>Tauri stays an HTTP client; file writes are backend-mediated and path-safe.</small>
         </div>
         <label className="checkRow"><input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} /> Allow overwrite after explicit confirmation</label>
@@ -1575,6 +2081,126 @@ function WorkflowPanel({ base, state, cards }: { base: string; state?: SymphonyS
   );
 }
 
+function EventLedger({
+  events,
+  status,
+  providerStatus
+}: {
+  events: OrchestrationEvent[];
+  status: OrchestrationEventStatus;
+  providerStatus?: ProviderStatusPayload;
+}) {
+  const activeProvider = providerStatus?.providers.find(provider => provider.active);
+  const latest = [...events].slice(-40).reverse();
+
+  return (
+    <section className="ledgerPage">
+      <div className="doc pixelPanel ledgerHero">
+        <div>
+          <p className="eyebrow">Orchestration Ledger</p>
+          <h2><Activity size={20} /> Live Contract</h2>
+          <p className="subtle">{providerLabel(activeProvider?.id || providerStatus?.active_provider)} · contract v{providerStatus?.contract_version || 1} · {status}</p>
+        </div>
+        <span className={`pill ${status === 'live' ? 'active' : status === 'reconnecting' ? 'warning' : 'neutral'}`}>{events.length} events</span>
+      </div>
+
+      <div className="ledgerGrid">
+        <div className="doc pixelPanel">
+          <div className="panelHeader">
+            <div>
+              <p className="eyebrow">Providers</p>
+              <h2><SlidersHorizontal size={20} /> Switchboard</h2>
+            </div>
+            <span className={`pill ${providerStatus?.status === 'ready' ? 'success' : 'warning'}`}>{providerStatus?.status || 'checking'}</span>
+          </div>
+          <div className="providerCards">
+            {(providerStatus?.providers || []).map(provider => (
+              <ProviderCard key={provider.id} provider={provider} />
+            ))}
+            {(providerStatus?.providers || []).length === 0 && <p className="subtle">Provider status unavailable.</p>}
+          </div>
+        </div>
+
+        <div className="doc pixelPanel ledgerList">
+          <div className="panelHeader">
+            <div>
+              <p className="eyebrow">Events</p>
+              <h2><FileText size={20} /> Timeline</h2>
+            </div>
+            <span className="pill neutral">{latest[0]?.type || 'waiting'}</span>
+          </div>
+          <div className="eventRows">
+            {latest.map(event => <EventRow key={event.id} event={event} />)}
+            {latest.length === 0 && <p className="subtle">No orchestration events received yet.</p>}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProviderCard({
+  provider,
+  busy,
+  onSelect
+}: {
+  provider: Provider;
+  busy?: boolean;
+  onSelect?: (provider: string) => void;
+}) {
+  const blockedReason = provider.blocked_reason || provider.message || 'Provider is not selectable yet.';
+  return (
+    <div className={`providerCard ${provider.active ? 'active' : ''}`}>
+      <div>
+        <b>{provider.name}</b>
+        <span>{provider.active ? 'active' : provider.default ? 'default' : 'optional'}</span>
+      </div>
+      <StatusPill status={provider.status} />
+      <dl className="definitionList compact">
+        {provider.command && <div><dt>Command</dt><dd>{provider.command}</dd></div>}
+        {provider.endpoint && <div><dt>Endpoint</dt><dd>{provider.endpoint}</dd></div>}
+        {provider.auth_source && <div><dt>Auth</dt><dd>{provider.auth_source}</dd></div>}
+        {provider.message && <div><dt>State</dt><dd>{provider.message}</dd></div>}
+      </dl>
+      {onSelect && (
+        <button
+          className={provider.active ? 'button secondary' : 'button primary'}
+          disabled={busy || provider.active || !provider.selectable}
+          title={!provider.selectable && !provider.active ? blockedReason : `Use ${provider.name}`}
+          onClick={() => onSelect(provider.id)}
+        >
+          <SlidersHorizontal size={14} />
+          {provider.active ? 'Active Provider' : provider.selectable ? `Use ${provider.name}` : 'Activation Blocked'}
+        </button>
+      )}
+      {!provider.selectable && !provider.active && <p className="subtle">{blockedReason}</p>}
+    </div>
+  );
+}
+
+function EventRow({ event }: { event: OrchestrationEvent }) {
+  return (
+    <div className="eventRow">
+      <div className="eventMain">
+        <span className={`eventDot ${statusClass(event.status || event.type)}`} />
+        <div>
+          <b>{event.type}</b>
+          <small>{providerLabel(event.provider)} · {event.stage || 'system'} · {formatEventTime(event.occurred_at)}</small>
+        </div>
+      </div>
+      <p>{event.message || event.action || 'Event received'}</p>
+      {(event.issue_identifier || event.issue_id) && <code>{event.issue_identifier || event.issue_id}</code>}
+    </div>
+  );
+}
+
+function formatEventTime(value?: string) {
+  if (!value) return 'pending';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
 function SafetyPanel() {
   return (
     <section className="doc pixelPanel">
@@ -1596,6 +2222,13 @@ function SettingsPanel({
   codexLoading,
   codexError,
   codexBusy,
+  providerStatus,
+  providerError,
+  providerSelectError,
+  providerBusy,
+  apiMode,
+  desktopStartupError,
+  desktopBridgeAvailable,
   backendRuntime,
   backendRuntimeError,
   backendBusy,
@@ -1604,6 +2237,7 @@ function SettingsPanel({
   onRestartBackend,
   onRefreshBackend,
   onLoadBackendLogs,
+  onSelectProvider,
   onStartCodexLogin,
   onCheckCodex,
   onLogoutCodex
@@ -1614,6 +2248,13 @@ function SettingsPanel({
   codexLoading: boolean;
   codexError?: string;
   codexBusy: boolean;
+  providerStatus?: ProviderStatusPayload;
+  providerError?: string;
+  providerSelectError?: string;
+  providerBusy: boolean;
+  apiMode: ApiMode;
+  desktopStartupError: string | null;
+  desktopBridgeAvailable: boolean;
   backendRuntime?: BackendRuntimePayload;
   backendRuntimeError?: string;
   backendBusy: boolean;
@@ -1622,14 +2263,18 @@ function SettingsPanel({
   onRestartBackend: () => void;
   onRefreshBackend: () => void;
   onLoadBackendLogs: () => void;
+  onSelectProvider: (provider: string) => void;
   onStartCodexLogin: () => void;
   onCheckCodex: () => void;
   onLogoutCodex: () => void;
 }) {
   const [v, setV] = useState(base);
   useEffect(() => setV(base), [base]);
-  const codexConnected = Boolean(codexAuth?.authenticated || codexAuth?.status === 'authenticated' || codexAuth?.status === 'connected');
-  const codexAvailable = codexAuth?.available !== false;
+  const codexState = String(codexAuth?.state || codexAuth?.status || '');
+  const codexConnected = Boolean(codexAuth?.authenticated || codexAuth?.connected || codexState === 'authenticated' || codexState === 'connected');
+  const codexAvailable = Boolean(codexAuth?.cli_available ?? codexAuth?.available ?? false);
+  const codexVersion = String(codexAuth?.cli_version || codexAuth?.version || 'unknown');
+  const codexCommand = String(codexAuth?.configured_command || codexAuth?.command || 'codex');
   const codexStatus = codexLoading
     ? 'checking…'
     : codexError
@@ -1639,6 +2284,7 @@ function SettingsPanel({
         : codexAvailable
           ? 'sign-in needed'
           : 'Codex CLI missing';
+  const backendControlsDisabled = backendBusy || !desktopBridgeAvailable;
   return (
     <section className="settingsStack">
       <div className="doc pixelPanel settingsHero">
@@ -1660,18 +2306,21 @@ function SettingsPanel({
         </div>
         <p className="subtle">The packaged desktop app now starts and supervises its own local backend. No separate backend service should be required.</p>
         <div className="codexStatusGrid">
+          <div><span>Mode</span><b>{apiModeLabel(apiMode)}</b></div>
+          <div><span>Tauri bridge</span><b>{desktopBridgeAvailable ? 'available' : 'not in this window'}</b></div>
           <div><span>Managed</span><b>{backendRuntime?.managed ? 'yes' : 'not yet'}</b></div>
           <div><span>Healthy</span><b>{backendRuntime?.healthy ? 'yes' : 'pending'}</b></div>
           <div><span>Port</span><b>{backendRuntime?.port || 'auto'}</b></div>
           <div><span>Source</span><b>{String(backendRuntime?.source || 'bundled backend')}</b></div>
         </div>
+        {desktopStartupError && <p className="formError">{desktopStartupError}</p>}
         {backendRuntimeError && <p className="formError">{backendRuntimeError}</p>}
         {backendRuntime?.lastError && <p className="formError">{String(backendRuntime.lastError)}</p>}
         <div className="formActions">
-          <button className="button primary" disabled={backendBusy} onClick={onStartBackend}><PlayCircle size={15} /> Start bundled backend</button>
-          <button className="button secondary" disabled={backendBusy} onClick={onRestartBackend}><RefreshCw size={15} /> Restart backend</button>
-          <button className="button secondary" disabled={backendBusy} onClick={onRefreshBackend}>Refresh status</button>
-          <button className="button secondary" disabled={backendBusy} onClick={onLoadBackendLogs}>Show logs</button>
+          <button className="button primary" disabled={backendControlsDisabled} onClick={onStartBackend}><PlayCircle size={15} /> Start bundled backend</button>
+          <button className="button secondary" disabled={backendControlsDisabled} onClick={onRestartBackend}><RefreshCw size={15} /> Restart backend</button>
+          <button className="button secondary" disabled={backendControlsDisabled} onClick={onRefreshBackend}>Refresh status</button>
+          <button className="button secondary" disabled={backendControlsDisabled} onClick={onLoadBackendLogs}>Show logs</button>
         </div>
         <div className="targetPreview">
           <b>Current API base</b>
@@ -1685,9 +2334,26 @@ function SettingsPanel({
           <div className="settingsRow">
             <input id="apiBase" value={v} onChange={e => setV(e.target.value)} placeholder="Leave blank to use bundled backend" />
             <button className="button primary" onClick={() => saveBase(v)}>Save override</button>
-            <button className="button secondary" onClick={() => { localStorage.removeItem('symphony.apiBase'); setV(''); onStartBackend(); }}>Use bundled backend</button>
+            <button className="button secondary" onClick={() => { setV(''); saveBase(''); }}>Use bundled backend</button>
           </div>
         </details>
+      </div>
+
+      <div className="doc pixelPanel providerControlPanel">
+        <div className="panelHeader">
+          <div>
+            <p className="eyebrow">Orchestration provider</p>
+            <h2><SlidersHorizontal size={20} /> Provider switchboard</h2>
+          </div>
+          <span className={`pill ${providerStatus?.status === 'ready' ? 'success' : 'warning'}`}>{providerStatus?.active_provider || 'checking'}</span>
+        </div>
+        {(providerError || providerSelectError) && <p className="formError">{providerError || providerSelectError}</p>}
+        <div className="providerCards">
+          {(providerStatus?.providers || []).map(provider => (
+            <ProviderCard key={provider.id} provider={provider} busy={providerBusy} onSelect={onSelectProvider} />
+          ))}
+          {(providerStatus?.providers || []).length === 0 && <p className="subtle">Provider status unavailable.</p>}
+        </div>
       </div>
 
       <div className="doc pixelPanel codexConnectPanel">
@@ -1702,14 +2368,14 @@ function SettingsPanel({
         <div className="codexStatusGrid">
           <div><span>CLI available</span><b>{codexAvailable ? 'yes' : 'no'}</b></div>
           <div><span>Authenticated</span><b>{codexConnected ? 'yes' : 'no'}</b></div>
-          <div><span>Version</span><b>{String(codexAuth?.version || 'unknown')}</b></div>
-          <div><span>Command</span><b>{String(codexAuth?.command || 'codex')}</b></div>
+          <div><span>Version</span><b>{codexVersion}</b></div>
+          <div><span>Command</span><b>{codexCommand}</b></div>
         </div>
         {codexError && <p className="formError">{codexError}</p>}
         {codexAuth?.message && <p className="subtle">{String(codexAuth.message)}</p>}
         {codexAuth?.login_command && <div className="targetPreview"><b>If a browser did not open, run:</b><code>{String(codexAuth.login_command)}</code></div>}
         <div className="formActions">
-          <button className="button primary" disabled={codexBusy} onClick={onStartCodexLogin}><BrainCircuit size={15} /> Connect Codex Pro</button>
+          <button className="button primary" disabled={codexBusy || !codexAvailable} onClick={onStartCodexLogin}><BrainCircuit size={15} /> Connect Codex Pro</button>
           <button className="button secondary" disabled={codexBusy} onClick={onCheckCodex}><RefreshCw size={15} /> Check connection</button>
           <button className="button danger" disabled={codexBusy} onClick={onLogoutCodex}>Disconnect</button>
         </div>

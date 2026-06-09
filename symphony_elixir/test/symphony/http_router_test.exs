@@ -130,7 +130,15 @@ defmodule Symphony.Http.RouterTest do
     assert Jason.decode!(conn.resp_body)["preview"]["frontmatter"]["tracker"]["api_key"] ==
              "$LINEAR_API_KEY"
 
-    path = "tmp-router-workflow/WORKFLOW.md"
+    path_root = "tmp-router-workflow-#{System.unique_integer([:positive])}"
+    moved_path_root = "tmp-router-workflow-moved-#{System.unique_integer([:positive])}"
+    path = Path.join(path_root, "WORKFLOW.md")
+    moved_path = Path.join(moved_path_root, "WORKFLOW.md")
+
+    on_exit(fn ->
+      File.rm_rf!(path_root)
+      File.rm_rf!(moved_path_root)
+    end)
 
     conn =
       conn(
@@ -159,8 +167,6 @@ defmodule Symphony.Http.RouterTest do
 
     assert conn.status == 409
 
-    moved_path = "tmp-router-workflow-moved/WORKFLOW.md"
-
     conn =
       conn(
         :post,
@@ -183,6 +189,56 @@ defmodule Symphony.Http.RouterTest do
       |> Symphony.Http.Router.call([])
 
     assert conn.status == 422
+  end
+
+  test "workflow generation and save ensure stage agent profiles" do
+    conn =
+      conn(
+        :post,
+        "/api/workflows/generate",
+        Jason.encode!(%{
+          template_id: "linear_codex_judge_refiner",
+          overrides: %{name: "router-orchestra", objective: "Create the stage quartet."}
+        })
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 200
+    generated = Jason.decode!(conn.resp_body)
+    generated_ids = Enum.map(generated["agent_profiles"], & &1["id"])
+    assert "workflow-generator" in generated_ids
+    assert "workflow-builder" in generated_ids
+    assert "workflow-judge" in generated_ids
+    assert "workflow-refiner" in generated_ids
+    assert generated["content"] =~ "stage_agents:"
+    assert generated["content"] =~ "instrument: \"Piano\""
+
+    conn = conn(:get, "/api/agents") |> Symphony.Http.Router.call([])
+    assert conn.status == 200
+    listed_ids = Enum.map(Jason.decode!(conn.resp_body)["profiles"], & &1["id"])
+    assert "workflow-judge" in listed_ids
+    assert "workflow-refiner" in listed_ids
+
+    path_root = "tmp-router-stage-agents-#{System.unique_integer([:positive])}"
+    path = Path.join(path_root, "WORKFLOW.md")
+    on_exit(fn -> File.rm_rf!(path_root) end)
+
+    conn =
+      conn(
+        :post,
+        "/api/workflows",
+        Jason.encode!(%{path: path, content: generated["content"], overwrite: true})
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 201
+    saved = Jason.decode!(conn.resp_body)
+    saved_ids = Enum.map(saved["agent_profiles"], & &1["id"])
+    assert "workflow-judge" in saved_ids
+    assert "workflow-refiner" in saved_ids
+    assert saved["agent_profile_changes"]["count"] == 4
   end
 
   test "workflow judge flags missing judge and refiner metadata" do

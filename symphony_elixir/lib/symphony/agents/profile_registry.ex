@@ -21,6 +21,8 @@ defmodule Symphony.AgentProfileRegistry do
   def metadata(server \\ __MODULE__), do: GenServer.call(server, :metadata)
   def get(id, server \\ __MODULE__), do: GenServer.call(server, {:get, id})
   def create(attrs, server \\ __MODULE__), do: GenServer.call(server, {:create, attrs})
+  def ensure(attrs, server \\ __MODULE__), do: GenServer.call(server, {:ensure, attrs})
+  def ensure_many(attrs, server \\ __MODULE__), do: GenServer.call(server, {:ensure_many, attrs})
   def update(id, attrs, server \\ __MODULE__), do: GenServer.call(server, {:update, id, attrs})
   def delete(id, server \\ __MODULE__), do: GenServer.call(server, {:delete, id})
 
@@ -63,6 +65,23 @@ defmodule Symphony.AgentProfileRegistry do
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
+
+  def handle_call({:ensure, attrs}, _from, state) do
+    case ensure_profiles([attrs], state) do
+      {:ok, result, next} -> {:reply, {:ok, hd(result.profiles)}, next}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:ensure_many, attrs}, _from, state) when is_list(attrs) do
+    case ensure_profiles(attrs, state) do
+      {:ok, result, next} -> {:reply, {:ok, result}, next}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:ensure_many, _attrs}, _from, state),
+    do: {:reply, {:error, {:validation, "profiles must be a list"}}, state}
 
   def handle_call({:update, id, attrs}, _from, state) do
     case Map.fetch(state.profiles, id) do
@@ -136,6 +155,67 @@ defmodule Symphony.AgentProfileRegistry do
   defp delete_persisted(state, id),
     do: %{state | profiles: Map.delete(state.profiles, id)} |> persist!()
 
+  defp ensure_profiles(attrs_list, state) do
+    attrs_list
+    |> Enum.reduce_while({state.profiles, [], []}, fn attrs, {profiles, created, updated} ->
+      attrs = stringify(attrs)
+
+      with {:ok, seed} <- normalize(attrs, nil),
+           {profile, action} <- ensure_profile(seed["id"], attrs, profiles),
+           :ok <-
+             unique_name(profile, profiles, if(action == :updated, do: profile["id"], else: nil)),
+           :ok <-
+             unique_id(
+               profile["id"],
+               profiles,
+               if(action == :updated, do: profile["id"], else: nil)
+             ) do
+        next_profiles = Map.put(profiles, profile["id"], profile)
+
+        case action do
+          :created -> {:cont, {next_profiles, created ++ [profile["id"]], updated}}
+          :updated -> {:cont, {next_profiles, created, updated ++ [profile["id"]]}}
+        end
+      else
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:error, reason} ->
+        {:error, reason}
+
+      {profiles, created, updated} ->
+        ensured_ids = created ++ updated
+
+        result = %{
+          profiles:
+            profiles
+            |> Map.take(ensured_ids)
+            |> Map.values()
+            |> Enum.sort_by(& &1["name"]),
+          created: created,
+          updated: updated,
+          count: length(ensured_ids)
+        }
+
+        {:ok, result, %{state | profiles: profiles} |> persist!()}
+    end
+  end
+
+  defp ensure_profile(id, attrs, profiles) do
+    case Map.fetch(profiles, id) do
+      {:ok, current} ->
+        with {:ok, profile} <- normalize(Map.merge(current, attrs), id) do
+          {profile, :updated}
+        end
+
+      :error ->
+        with {:ok, profile} <- normalize(attrs, nil) do
+          {profile, :created}
+        end
+    end
+  end
+
   defp normalize(attrs, forced_id) when is_map(attrs) do
     attrs = stringify(attrs)
     now = DateTime.utc_now() |> DateTime.to_iso8601()
@@ -182,6 +262,8 @@ defmodule Symphony.AgentProfileRegistry do
              int_or(attrs["max_concurrent_tasks"] || attrs["maxConcurrentTasks"], 1),
            "status" => if(bool_or(attrs["enabled"], true), do: "idle", else: "disabled"),
            "current_assignments" => [],
+           "music" => music(attrs["music"]),
+           "stage_position" => stage_position(attrs["stage_position"] || attrs["stagePosition"]),
            "created_at" => attrs["created_at"] || now,
            "updated_at" => now
          }}
@@ -189,6 +271,12 @@ defmodule Symphony.AgentProfileRegistry do
   end
 
   defp normalize(_, _), do: {:error, {:validation, "profile must be an object"}}
+
+  defp music(raw) when is_map(raw), do: stringify(raw)
+  defp music(_), do: %{}
+
+  defp stage_position(raw) when is_map(raw), do: stringify(raw)
+  defp stage_position(_), do: %{}
 
   defp policy(raw) when is_map(raw) do
     raw = stringify(raw)

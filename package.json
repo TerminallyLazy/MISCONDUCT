@@ -6,9 +6,10 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "build:backend": "node scripts/stage-backend-release.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "tauri": "tauri",
-    "tauri:build": "tauri build"
+    "tauri:build": "npm run build:backend && tauri build"
   },
   "dependencies": {
     "@tanstack/react-query": "latest",

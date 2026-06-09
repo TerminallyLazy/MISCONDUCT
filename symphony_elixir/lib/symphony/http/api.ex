@@ -63,6 +63,80 @@ defmodule Symphony.Http.Api do
     })
   end
 
+  def events(conn) do
+    json(conn, 200, %{
+      generated_at: DateTime.utc_now(),
+      stream: "/api/events/stream",
+      events: Symphony.Events.list(100)
+    })
+  end
+
+  def orchestration_providers(conn),
+    do: json(conn, 200, Symphony.Orchestration.Providers.status(current_config()))
+
+  def select_orchestration_provider(conn) do
+    config = current_config()
+    provider = body_value(conn, "provider") || body_value(conn, "id")
+
+    case Symphony.Orchestration.Providers.select(provider, config) do
+      {:ok, status} ->
+        Symphony.Events.publish(%{
+          type: "provider.selection.accepted",
+          source: "http_api",
+          provider: status.active_provider,
+          stage: "orchestration",
+          status: "ready",
+          message: "#{provider_label(status.active_provider)} provider selected.",
+          data: %{active_provider: status.active_provider}
+        })
+
+        json(conn, 200, status)
+
+      {:error, reason, message, status} ->
+        Symphony.Events.publish(%{
+          type: "provider.selection.rejected",
+          source: "http_api",
+          provider: to_string(provider || ""),
+          stage: "orchestration",
+          status: "blocked",
+          message: message,
+          data: %{reason: reason, requested_provider: provider}
+        })
+
+        json(conn, 409, %{
+          ok: false,
+          error: %{code: to_string(reason), message: message},
+          provider_status: status
+        })
+    end
+  end
+
+  def event_stream(conn) do
+    conn =
+      conn
+      |> put_resp_header("cache-control", "no-cache")
+      |> put_resp_header("connection", "keep-alive")
+      |> put_resp_content_type("text/event-stream")
+      |> send_chunked(200)
+
+    conn =
+      Symphony.Events.list(25)
+      |> Enum.reduce_while(conn, fn event, acc ->
+        case write_sse(acc, event) do
+          {:ok, next} -> {:cont, next}
+          {:error, _reason} -> {:halt, acc}
+        end
+      end)
+
+    :ok = Symphony.Events.subscribe()
+
+    try do
+      stream_events(conn)
+    after
+      Symphony.Events.unsubscribe()
+    end
+  end
+
   def workflow(conn), do: json(conn, 200, workflow_metadata())
 
   def list_workflow_templates(conn),
@@ -74,9 +148,18 @@ defmodule Symphony.Http.Api do
   end
 
   def generate_workflow(conn) do
-    case Symphony.Workflow.Files.generate(conn.body_params || %{}) do
-      {:ok, payload} -> json(conn, 200, payload)
-      {:error, reason} -> workflow_error(conn, reason)
+    params = conn.body_params || %{}
+
+    case Symphony.Workflow.Files.generate(params) do
+      {:ok, payload} ->
+        with {:ok, agent_payload} <- ensure_workflow_agents(params, payload) do
+          json(conn, 200, Map.merge(payload, agent_payload))
+        else
+          {:error, reason} -> workflow_error(conn, reason)
+        end
+
+      {:error, reason} ->
+        workflow_error(conn, reason)
     end
   end
 
@@ -95,9 +178,18 @@ defmodule Symphony.Http.Api do
   end
 
   def create_workflow(conn) do
-    case Symphony.Workflow.Files.create(conn.body_params || %{}) do
-      {:ok, payload} -> json(conn, 201, payload)
-      {:error, reason} -> workflow_error(conn, reason)
+    params = conn.body_params || %{}
+
+    case Symphony.Workflow.Files.create(params) do
+      {:ok, payload} ->
+        with {:ok, agent_payload} <- ensure_workflow_agents(params, payload) do
+          json(conn, 201, Map.merge(payload, agent_payload))
+        else
+          {:error, reason} -> workflow_error(conn, reason)
+        end
+
+      {:error, reason} ->
+        workflow_error(conn, reason)
     end
   end
 
@@ -113,23 +205,43 @@ defmodule Symphony.Http.Api do
   def codex_auth_status(conn), do: json(conn, 200, Symphony.Codex.Auth.status(current_config()))
 
   def codex_auth_login_start(conn) do
+    Symphony.Events.publish(%{
+      type: "auth.codex.login.requested",
+      source: "http_api",
+      action: "login_start",
+      message: "Codex login requested."
+    })
+
     case Symphony.Codex.Auth.login_start(current_config()) do
-      {:ok, payload} -> json(conn, 200, payload)
-      {:error, :codex_cli_missing} -> error(conn, 404, "Codex CLI executable was not found")
-      {:error, reason} -> error(conn, 500, inspect(reason))
+      {:ok, payload} ->
+        publish_codex_auth_event("auth.codex.login.completed", payload)
+        json(conn, 200, payload)
+
+      {:error, :codex_cli_missing} ->
+        error(conn, 404, "Codex CLI executable was not found")
+
+      {:error, reason} ->
+        error(conn, 500, inspect(reason))
     end
   end
 
   def codex_auth_check(conn) do
     {:ok, payload} = Symphony.Codex.Auth.check(current_config())
+    publish_codex_auth_event("auth.codex.check.completed", payload)
     json(conn, 200, payload)
   end
 
   def codex_auth_logout(conn) do
     case Symphony.Codex.Auth.logout(current_config()) do
-      {:ok, payload} -> json(conn, 200, payload)
-      {:error, :codex_cli_missing} -> error(conn, 404, "Codex CLI executable was not found")
-      {:error, reason} -> error(conn, 500, inspect(reason))
+      {:ok, payload} ->
+        publish_codex_auth_event("auth.codex.logout.completed", payload)
+        json(conn, 200, payload)
+
+      {:error, :codex_cli_missing} ->
+        error(conn, 404, "Codex CLI executable was not found")
+
+      {:error, reason} ->
+        error(conn, 500, inspect(reason))
     end
   end
 
@@ -186,6 +298,13 @@ defmodule Symphony.Http.Api do
   end
 
   def refresh(conn) do
+    Symphony.Events.publish(%{
+      type: "operator.refresh.requested",
+      source: "http_api",
+      action: "refresh",
+      message: "Operator requested a Linear poll."
+    })
+
     Symphony.Orchestrator.refresh()
 
     json(conn, 202, %{
@@ -217,6 +336,15 @@ defmodule Symphony.Http.Api do
   def move_issue(conn, id) do
     target = body_value(conn, "target") || body_value(conn, "column") || body_value(conn, "state")
 
+    Symphony.Events.publish(%{
+      type: "operator.issue.move.accepted",
+      source: "http_api",
+      issue_id: id,
+      action: "move",
+      message: "Move request accepted for operator workflow.",
+      data: %{target: target, external_tracker_wired: false}
+    })
+
     json(conn, 202, %{
       ok: true,
       issue_id: id,
@@ -228,6 +356,15 @@ defmodule Symphony.Http.Api do
   end
 
   def issue_action(conn, id, action) do
+    Symphony.Events.publish(%{
+      type: "operator.issue.action.accepted",
+      source: "http_api",
+      issue_id: id,
+      action: action,
+      message: "Operator action accepted.",
+      data: %{external_tracker_wired: false}
+    })
+
     json(conn, 202, %{
       ok: true,
       issue_id: id,
@@ -245,6 +382,56 @@ defmodule Symphony.Http.Api do
   defp error(conn, status, reason),
     do: json(conn, status, %{ok: false, error: %{code: "error", message: to_string(reason)}})
 
+  defp ensure_workflow_agents(params, payload) do
+    params = params || %{}
+    content = payload[:content]
+
+    profiles =
+      params
+      |> Symphony.Workflow.Files.companion_agent_profiles()
+      |> case do
+        [] when is_binary(content) ->
+          Symphony.Workflow.Files.companion_agent_profiles(%{"content" => content})
+
+        companion_profiles ->
+          companion_profiles
+      end
+
+    case profiles do
+      [] ->
+        {:ok,
+         %{
+           agent_profiles: [],
+           agent_profile_changes: %{created: [], updated: [], count: 0}
+         }}
+
+      profiles ->
+        with {:ok, result} <- Symphony.AgentProfileRegistry.ensure_many(profiles) do
+          Symphony.Events.publish(%{
+            type: "workflow.agents.ensured",
+            source: "http_api",
+            action: "ensure_workflow_agents",
+            message: "Workflow stage agents were created or refreshed.",
+            data: %{
+              created: result.created,
+              updated: result.updated,
+              count: result.count
+            }
+          })
+
+          {:ok,
+           %{
+             agent_profiles: result.profiles,
+             agent_profile_changes: %{
+               created: result.created,
+               updated: result.updated,
+               count: result.count
+             }
+           }}
+        end
+    end
+  end
+
   defp workflow_error(conn, :not_found), do: error(conn, 404, "workflow not found")
 
   defp workflow_error(conn, :template_not_found),
@@ -252,6 +439,8 @@ defmodule Symphony.Http.Api do
 
   defp workflow_error(conn, :conflict),
     do: error(conn, 409, "workflow destination already exists")
+
+  defp workflow_error(conn, {:conflict, message}), do: error(conn, 409, message)
 
   defp workflow_error(conn, {:unsafe_path, message}), do: error(conn, 422, message)
 
@@ -316,7 +505,12 @@ defmodule Symphony.Http.Api do
         read_timeout_ms: c.codex_read_timeout_ms,
         stall_timeout_ms: c.codex_stall_timeout_ms
       },
-      hooks: %{configured: Map.keys(c.hooks || %{}), timeout_ms: c.hook_timeout_ms}
+      hooks: %{configured: Map.keys(c.hooks || %{}), timeout_ms: c.hook_timeout_ms},
+      orchestration: %{
+        active_provider: Symphony.Orchestration.Providers.active_provider(c),
+        default_provider: "direct_codex",
+        provider_contract: ["direct_codex", "agent_zero"]
+      }
     }
   end
 
@@ -344,8 +538,10 @@ defmodule Symphony.Http.Api do
     do:
       "#{snap.counts.running} running, #{snap.counts.retrying} retrying, #{snap.counts.completed} completed"
 
-  defp run_card(run) do
+  def run_card(run) do
     issue = run.issue || %{}
+    agent_profile = run.agent_profile || %{}
+    phase = run.phase || "build"
 
     %{
       id: run.issue_id,
@@ -355,8 +551,17 @@ defmodule Symphony.Http.Api do
       title: Map.get(issue, :title) || run.issue_identifier || run.issue_id,
       state: Map.get(issue, :state) || "Running",
       status: run.status,
-      operator_status: "running",
+      stage: phase,
+      phase: phase,
+      operator_status: phase_operator_status(phase),
       operator_summary: run.last_message,
+      agent_profile: agent_profile,
+      agent_profile_id: agent_profile[:id],
+      agent_name: agent_profile[:name],
+      agent_role: agent_profile[:role],
+      agent_section: agent_profile[:section],
+      instrument_name: agent_profile[:instrument_name],
+      agent_profile_status: agent_profile[:status],
       workspace_path: run.workspace_path,
       session_id: run.session_id,
       last_event: run.last_event,
@@ -365,11 +570,26 @@ defmodule Symphony.Http.Api do
       started_at: run.started_at,
       turn_count: run.turn_count,
       tokens: run.tokens,
+      refiner_attempt: run.refiner_attempt,
+      refiner_max_attempts: run.refiner_max_attempts,
+      judge_verdict: run.judge_verdict,
+      verdict:
+        get_in(run.judge_verdict || %{}, [:verdict]) ||
+          get_in(run.judge_verdict || %{}, ["verdict"]),
+      verdict_path:
+        get_in(run.judge_verdict || %{}, [:path]) || get_in(run.judge_verdict || %{}, ["path"]),
       events: run.events
     }
   end
 
+  defp phase_operator_status("judge"), do: "judging"
+  defp phase_operator_status("refiner"), do: "refining"
+  defp phase_operator_status(_), do: "running"
+
   defp retry_card(retry) do
+    agent_profile = retry.agent_profile || %{}
+    phase = retry.phase || "retry"
+
     %{
       id: retry.issue_id,
       issue_id: retry.issue_id,
@@ -378,8 +598,23 @@ defmodule Symphony.Http.Api do
       title: retry.issue_identifier || retry.issue_id,
       state: "Retrying",
       status: "retrying",
+      stage: phase,
+      phase: phase,
       operator_status: "needs_attention",
       operator_summary: retry.error,
+      agent_profile: agent_profile,
+      agent_profile_id: agent_profile[:id],
+      agent_name: agent_profile[:name],
+      agent_role: agent_profile[:role],
+      agent_section: agent_profile[:section],
+      instrument_name: agent_profile[:instrument_name],
+      agent_profile_status: agent_profile[:status],
+      judge_verdict: retry.judge_verdict,
+      verdict: retry.verdict,
+      verdict_path: retry.verdict_path,
+      reason: retry.reason,
+      refiner_attempt: retry.refiner_attempt,
+      refiner_max_attempts: retry.refiner_max_attempts,
       attempt: retry.attempt,
       due_at: retry.due_at,
       error: retry.error
@@ -405,5 +640,51 @@ defmodule Symphony.Http.Api do
   defp body_value(conn, key) do
     params = conn.body_params || %{}
     Map.get(params, key) || Map.get(params, String.to_atom(key))
+  end
+
+  defp provider_label("agent_zero"), do: "Agent Zero"
+  defp provider_label("direct_codex"), do: "Direct Codex Agents"
+  defp provider_label(provider), do: to_string(provider)
+
+  defp publish_codex_auth_event(type, payload) do
+    status = payload[:status] || payload["status"] || payload
+
+    Symphony.Events.publish(%{
+      type: type,
+      source: "codex_auth",
+      action: auth_value(payload, :state) || auth_value(status, :state),
+      status: auth_value(status, :state),
+      message: auth_value(payload, :message) || auth_value(status, :message),
+      data: %{
+        authenticated: auth_value(status, :authenticated),
+        connected: auth_value(status, :connected),
+        cli_available: auth_value(status, :cli_available),
+        auth_source: auth_value(status, :auth_source)
+      }
+    })
+  end
+
+  defp auth_value(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, to_string(key)))
+  defp auth_value(_map, _key), do: nil
+
+  defp stream_events(conn) do
+    receive do
+      {:symphony_event, event} ->
+        case write_sse(conn, event) do
+          {:ok, next} -> stream_events(next)
+          {:error, _reason} -> conn
+        end
+    after
+      15_000 ->
+        case chunk(conn, ": heartbeat #{DateTime.to_iso8601(DateTime.utc_now())}\n\n") do
+          {:ok, next} -> stream_events(next)
+          {:error, _reason} -> conn
+        end
+    end
+  end
+
+  defp write_sse(conn, event) do
+    id = event[:id] || event["id"] || ""
+    chunk(conn, "id: #{id}\ndata: #{Json.encode!(event)}\n\n")
   end
 end

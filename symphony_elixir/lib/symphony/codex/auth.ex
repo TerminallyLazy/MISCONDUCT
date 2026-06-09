@@ -13,20 +13,26 @@ defmodule Symphony.Codex.Auth do
     command = codex_command(config)
     exe = executable(command)
     now = DateTime.utc_now()
+    login_command = manual_login_command(command)
 
     cond do
       is_nil(exe) ->
         %{
           ok: true,
+          available: false,
           connected: false,
           authenticated: false,
           state: "cli_missing",
+          status: "cli_missing",
           cli_available: false,
+          command: command,
           configured_command: command,
           executable: nil,
+          version: nil,
           cli_version: nil,
           account_label: nil,
           auth_source: "codex_cli",
+          login_command: login_command,
           last_checked_at: now,
           message: "Codex CLI executable was not found on PATH. Install Codex CLI, then sign in."
         }
@@ -37,15 +43,20 @@ defmodule Symphony.Codex.Auth do
 
         %{
           ok: true,
+          available: true,
           connected: auth.connected,
           authenticated: auth.connected,
           state: auth.state,
+          status: auth.state,
           cli_available: true,
+          command: command,
           configured_command: command,
           executable: exe,
+          version: version,
           cli_version: version,
           account_label: auth.account_label,
           auth_source: "codex_cli",
+          login_command: login_command,
           last_checked_at: now,
           message: auth.message,
           supports_login: true,
@@ -63,13 +74,16 @@ defmodule Symphony.Codex.Auth do
         {:error, :codex_cli_missing}
 
       exe ->
-        case run_cli(exe, ["login"], 120_000) do
+        login_command = manual_login_command(command)
+
+        case run_cli(exe, ["login", "--device-auth"], 12_000) do
           {0, out} ->
             {:ok,
              %{
                ok: true,
                state: "login_completed_or_pending",
                auth_source: "codex_cli",
+               login_command: login_command,
                message:
                  "Codex CLI login command completed. Click Check status to verify the account.",
                output: redact(out),
@@ -82,8 +96,9 @@ defmodule Symphony.Codex.Auth do
                ok: true,
                state: "manual_required",
                auth_source: "codex_cli",
+               login_command: login_command,
                message:
-                 "Codex CLI login could not be completed non-interactively. Run `codex login` in the same user environment, then click Check status.",
+                 "Codex CLI login could not be completed from the desktop app. Run `#{login_command}` in the same user environment, then click Check status.",
                exit_status: code,
                output: redact(out),
                status: status(config)
@@ -162,6 +177,25 @@ defmodule Symphony.Codex.Auth do
     |> String.split(~r/\s+/, parts: 2)
     |> hd()
     |> System.find_executable()
+  end
+
+  defp manual_login_command(command) do
+    executable =
+      command
+      |> String.split(~r/\s+/, parts: 2)
+      |> hd()
+
+    "#{shell_quote(executable)} login --device-auth"
+  end
+
+  defp shell_quote(value) do
+    value = to_string(value)
+
+    if String.match?(value, ~r"^[A-Za-z0-9_@%+=:,./-]+$") do
+      value
+    else
+      "'" <> String.replace(value, "'", "'\\''") <> "'"
+    end
   end
 
   defp version(exe) do

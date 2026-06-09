@@ -38,12 +38,182 @@ defmodule Symphony.Workflow.Files do
     }
   }
 
+  @companion_profiles %{
+    "linear_codex_judge_refiner" => [
+      %{
+        "id" => "workflow-generator",
+        "name" => "Workflow Generator",
+        "role" => "Generator",
+        "profile_key" => "workflow-generator",
+        "section" => "Woodwinds",
+        "instrument_name" => "Clarinet",
+        "description" => "Opens the score by turning real issue context into bounded plans.",
+        "instructions" =>
+          "Draft implementation plans using only real Linear issue context and repository facts.",
+        "capabilities" => ["workflow-generation", "planning", "linear-intake"],
+        "music" => %{
+          "motif" => "Overture / Intake",
+          "dynamic" => "mezzo-piano",
+          "register" => "middle"
+        },
+        "stage_position" => %{"section" => "woodwinds", "seat" => "front-left"}
+      },
+      %{
+        "id" => "workflow-builder",
+        "name" => "Codex Builder",
+        "role" => "Builder",
+        "profile_key" => "workflow-builder",
+        "section" => "Strings",
+        "instrument_name" => "Violin",
+        "description" => "Carries the implementation line through the active Codex workspace.",
+        "instructions" => "Run Codex against real issue workspaces and keep changes scoped.",
+        "capabilities" => ["implementation", "codex", "repository-work"],
+        "music" => %{
+          "motif" => "Movement I / Build",
+          "dynamic" => "mezzo-forte",
+          "register" => "upper-middle"
+        },
+        "stage_position" => %{"section" => "strings", "seat" => "front-center"}
+      },
+      %{
+        "id" => "workflow-judge",
+        "name" => "Workflow Judge",
+        "role" => "Judge",
+        "profile_key" => "workflow-judge",
+        "section" => "Piano",
+        "instrument_name" => "Piano",
+        "description" =>
+          "Evaluates completed movements against quality, safety, and scope gates.",
+        "instructions" =>
+          "Judge work against tests, issue fit, changed-file scope, and secret-safety constraints.",
+        "capabilities" => ["review", "quality-gates", "safety"],
+        "music" => %{
+          "motif" => "Movement II / Judge",
+          "dynamic" => "mezzo-piano",
+          "register" => "middle"
+        },
+        "stage_position" => %{"section" => "piano", "seat" => "center-right"}
+      },
+      %{
+        "id" => "workflow-refiner",
+        "name" => "Workflow Refiner",
+        "role" => "Refiner",
+        "profile_key" => "workflow-refiner",
+        "section" => "Brass",
+        "instrument_name" => "French Horn",
+        "description" =>
+          "Resolves judge findings with bounded, evidence-based correction passes.",
+        "instructions" =>
+          "Fix judge findings without inventing facts or expanding the task scope.",
+        "capabilities" => ["refinement", "review-fixes", "bounded-retry"],
+        "music" => %{
+          "motif" => "Movement III / Refine",
+          "dynamic" => "mezzo-forte",
+          "register" => "lower-middle"
+        },
+        "stage_position" => %{"section" => "brass", "seat" => "back-right"}
+      }
+    ],
+    "repository_orchestra" => [
+      %{
+        "id" => "repository-workflow-generator",
+        "name" => "Repository Planner",
+        "role" => "Generator",
+        "profile_key" => "repository-workflow-generator",
+        "section" => "Woodwinds",
+        "instrument_name" => "Clarinet",
+        "description" => "Reads repository context and sets the opening implementation theme.",
+        "instructions" => "Inspect real repository facts before proposing implementation phases.",
+        "capabilities" => ["repository-analysis", "planning", "source-reading"],
+        "music" => %{"motif" => "Score Reading", "dynamic" => "piano", "register" => "middle"},
+        "stage_position" => %{"section" => "woodwinds", "seat" => "front-left"}
+      },
+      %{
+        "id" => "repository-workflow-builder",
+        "name" => "Repository Builder",
+        "role" => "Builder",
+        "profile_key" => "repository-workflow-builder",
+        "section" => "Strings",
+        "instrument_name" => "Viola",
+        "description" => "Implements scoped repository changes from the selected score.",
+        "instructions" => "Make narrow repository changes and preserve unrelated worktree state.",
+        "capabilities" => ["implementation", "repository-work", "desktop-app"],
+        "music" => %{"motif" => "Composition", "dynamic" => "mezzo-forte", "register" => "middle"},
+        "stage_position" => %{"section" => "strings", "seat" => "front-center"}
+      },
+      %{
+        "id" => "repository-workflow-judge",
+        "name" => "Repository Judge",
+        "role" => "Judge",
+        "profile_key" => "repository-workflow-judge",
+        "section" => "Piano",
+        "instrument_name" => "Piano",
+        "description" => "Checks repository evidence, validation, attribution, and safety.",
+        "instructions" => "Judge changes using repository-grounded commands and source evidence.",
+        "capabilities" => ["review", "validation", "source-attribution"],
+        "music" => %{"motif" => "Critique", "dynamic" => "mezzo-piano", "register" => "middle"},
+        "stage_position" => %{"section" => "piano", "seat" => "center-right"}
+      },
+      %{
+        "id" => "repository-workflow-validator",
+        "name" => "Repository Validator",
+        "role" => "Validator",
+        "profile_key" => "repository-workflow-validator",
+        "section" => "Percussion",
+        "instrument_name" => "Timpani",
+        "description" => "Marks validation beats and unresolved command gaps.",
+        "instructions" => "Run available project validation commands and report exact results.",
+        "capabilities" => ["tests", "validation", "command-results"],
+        "music" => %{"motif" => "Rehearsal", "dynamic" => "forte", "register" => "low"},
+        "stage_position" => %{"section" => "percussion", "seat" => "back-center"}
+      },
+      %{
+        "id" => "repository-workflow-refiner",
+        "name" => "Repository Refiner",
+        "role" => "Refiner",
+        "profile_key" => "repository-workflow-refiner",
+        "section" => "Brass",
+        "instrument_name" => "French Horn",
+        "description" => "Closes review findings with bounded correction passes.",
+        "instructions" =>
+          "Resolve judge findings while keeping changes inside the requested scope.",
+        "capabilities" => ["refinement", "review-fixes", "bounded-retry"],
+        "music" => %{
+          "motif" => "Performance",
+          "dynamic" => "mezzo-forte",
+          "register" => "lower-middle"
+        },
+        "stage_position" => %{"section" => "brass", "seat" => "back-right"}
+      }
+    ]
+  }
+
   @known_placeholders ~w(issue.identifier issue.title issue.state issue.description attempt workspace.root agent.name workflow.name)
   @required_headings ["Objective", "Inputs", "Agents", "Phases", "Validation Gates", "Guardrails"]
 
   def templates do
     @templates |> Map.values() |> Enum.sort_by(& &1.name)
   end
+
+  def companion_agent_profiles(template_id) when is_binary(template_id),
+    do: Map.get(@companion_profiles, template_id, [])
+
+  def companion_agent_profiles(attrs) when is_map(attrs) do
+    attrs = stringify(attrs || %{})
+
+    cond do
+      is_binary(attrs["template_id"]) or is_binary(attrs["template"]) ->
+        companion_agent_profiles(attrs["template_id"] || attrs["template"])
+
+      is_binary(attrs["content"]) ->
+        companion_agent_profiles_from_content(attrs["content"])
+
+      true ->
+        []
+    end
+  end
+
+  def companion_agent_profiles(_), do: []
 
   def list(opts \\ []) do
     config = Keyword.get(opts, :config) || current_config()
@@ -312,6 +482,10 @@ defmodule Symphony.Workflow.Files do
       provider: codex
       profile: workflow-generator
       instructions: Draft implementation plans using only real issue context and repository facts.
+    builder:
+      provider: codex
+      profile: workflow-builder
+      instructions: Run Codex against the issue workspace with scoped repository changes.
     judge:
       provider: codex
       profile: workflow-judge
@@ -322,6 +496,8 @@ defmodule Symphony.Workflow.Files do
       profile: workflow-refiner
       max_attempts: 3
       strategy: fix_judge_findings
+    stage_agents:
+    #{stage_agents_yaml("linear_codex_judge_refiner")}
     ---
     # Workflow
 
@@ -416,6 +592,9 @@ defmodule Symphony.Workflow.Files do
     generator:
       provider: codex
       profile: repository-workflow-generator
+    builder:
+      provider: codex
+      profile: repository-workflow-builder
     judge:
       provider: codex
       profile: repository-workflow-judge
@@ -424,6 +603,11 @@ defmodule Symphony.Workflow.Files do
       provider: codex
       profile: repository-workflow-refiner
       max_attempts: 3
+    validator:
+      provider: codex
+      profile: repository-workflow-validator
+    stage_agents:
+    #{stage_agents_yaml("repository_orchestra")}
     ---
     # Workflow
 
@@ -475,6 +659,84 @@ defmodule Symphony.Workflow.Files do
     """
     |> String.trim()
     |> Kernel.<>("\n")
+  end
+
+  defp companion_agent_profiles_from_content(content) do
+    with {:ok, wf} <- Loader.parse(content),
+         stage_agents when is_list(stage_agents) <- wf.config["stage_agents"] do
+      stage_agents
+      |> Enum.map(&profile_from_stage_agent/1)
+      |> Enum.reject(&is_nil/1)
+    else
+      _ -> []
+    end
+  end
+
+  defp profile_from_stage_agent(raw) when is_map(raw) do
+    raw = stringify(raw)
+    music = raw["music"] |> map_or_empty() |> stringify()
+    stage = (raw["stage"] || raw["stage_position"]) |> map_or_empty() |> stringify()
+    id = raw["id"] || raw["profile"] || raw["profile_key"]
+
+    if present?(id) do
+      section = raw["section"] || music["section"] || "Strings"
+      instrument = raw["instrument_name"] || raw["instrument"] || music["instrument"]
+
+      %{
+        "id" => id,
+        "name" => raw["name"] || humanize(id),
+        "role" => raw["role"] || "Agent",
+        "profile_key" => raw["profile_key"] || id,
+        "section" => section,
+        "instrument_name" => instrument,
+        "description" => raw["description"] || "",
+        "instructions" => raw["instructions"] || "",
+        "capabilities" => list_strings(raw["capabilities"]),
+        "music" =>
+          Map.merge(music, %{
+            "section" => section,
+            "instrument" => instrument || "",
+            "motif" => raw["motif"] || music["motif"] || ""
+          }),
+        "stage_position" => stage
+      }
+    end
+  end
+
+  defp profile_from_stage_agent(_), do: nil
+
+  defp stage_agents_yaml(template_id) do
+    template_id
+    |> companion_agent_profiles()
+    |> Enum.map(&stage_agent_yaml/1)
+    |> Enum.join("\n")
+  end
+
+  defp stage_agent_yaml(profile) do
+    music = profile["music"] || %{}
+    stage = profile["stage_position"] || %{}
+
+    """
+      - profile: #{yaml(profile["id"])}
+        name: #{yaml(profile["name"])}
+        role: #{yaml(profile["role"])}
+        profile_key: #{yaml(profile["profile_key"])}
+        section: #{yaml(profile["section"])}
+        instrument: #{yaml(profile["instrument_name"])}
+        description: #{yaml(profile["description"])}
+        instructions: #{yaml(profile["instructions"])}
+        capabilities: #{yaml_list(profile["capabilities"] || [])}
+        music:
+          section: #{yaml(profile["section"])}
+          instrument: #{yaml(profile["instrument_name"])}
+          motif: #{yaml(music["motif"] || "")}
+          dynamic: #{yaml(music["dynamic"] || "")}
+          register: #{yaml(music["register"] || "")}
+        stage:
+          section: #{yaml(stage["section"] || "")}
+          seat: #{yaml(stage["seat"] || "")}
+    """
+    |> String.trim_trailing()
   end
 
   defp content_from(attrs, opts) do
@@ -789,8 +1051,27 @@ defmodule Symphony.Workflow.Files do
   defp stringify(m) when is_map(m), do: Map.new(m, fn {k, v} -> {to_string(k), stringify(v)} end)
   defp stringify(l) when is_list(l), do: Enum.map(l, &stringify/1)
   defp stringify(v), do: v
+  defp map_or_empty(v) when is_map(v), do: v
+  defp map_or_empty(_), do: %{}
   defp value(map, key, default), do: map[key] || default
   defp yaml(v), do: inspect(to_string(v))
+  defp yaml_list(values), do: "[" <> (values |> Enum.map(&yaml/1) |> Enum.join(", ")) <> "]"
+
+  defp humanize(v),
+    do:
+      v
+      |> to_string()
+      |> String.replace(~r/[-_]+/, " ")
+      |> String.split()
+      |> Enum.map_join(" ", &String.capitalize/1)
+
+  defp list_strings(v) when is_list(v),
+    do: v |> Enum.map(&to_string/1) |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+
+  defp list_strings(v) when is_binary(v),
+    do: v |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+
+  defp list_strings(_), do: []
   defp bool(v, _default) when is_boolean(v), do: v
   defp bool(nil, default), do: default
 
