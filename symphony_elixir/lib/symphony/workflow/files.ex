@@ -303,8 +303,9 @@ defmodule Symphony.Workflow.Files do
          absolute_path: path,
          content_sha256: sha256(content),
          validation: validation,
-         restart_required: active_path?(path, opts),
-         reload_supported: false
+         restart_required: false,
+         reload_required: active_path?(path, opts),
+         reload_supported: true
        }}
     end
   end
@@ -329,8 +330,9 @@ defmodule Symphony.Workflow.Files do
          source_path: rel(source, opts),
          destination_path: rel(dest, opts),
          active_workflow_moved: active_path?(source, opts),
-         restart_required: active_path?(source, opts) or active_path?(dest, opts),
-         reload_supported: false,
+         restart_required: false,
+         reload_required: active_path?(source, opts) or active_path?(dest, opts),
+         reload_supported: true,
          validation: validation
        }}
     else
@@ -1018,8 +1020,9 @@ defmodule Symphony.Workflow.Files do
          moved: true,
          source_path: rel(source, opts),
          destination_path: rel(dest, opts),
-         restart_required: true,
-         reload_supported: false
+         restart_required: false,
+         reload_required: true,
+         reload_supported: true
        }}
     end
   end

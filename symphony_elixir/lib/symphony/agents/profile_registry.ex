@@ -26,6 +26,9 @@ defmodule Symphony.AgentProfileRegistry do
   def update(id, attrs, server \\ __MODULE__), do: GenServer.call(server, {:update, id, attrs})
   def delete(id, server \\ __MODULE__), do: GenServer.call(server, {:delete, id})
 
+  def reload_config(config, server \\ __MODULE__),
+    do: GenServer.call(server, {:reload_config, config})
+
   @impl true
   def init(config) do
     path = profile_path(config)
@@ -46,6 +49,18 @@ defmodule Symphony.AgentProfileRegistry do
         exists: File.exists?(state.path),
         writable: writable?(state.path)
       }}, state}
+  end
+
+  def handle_call({:reload_config, config}, _from, state) do
+    path = profile_path(config)
+
+    try do
+      File.mkdir_p!(Path.dirname(path))
+      next = %{state | path: path, profiles: load_profiles(path)}
+      {:reply, {:ok, metadata_payload(next)}, next}
+    rescue
+      e -> {:reply, {:error, {:profile_registry_reload_failed, Exception.message(e)}}, state}
+    end
   end
 
   def handle_call({:get, id}, _from, state) do
@@ -111,6 +126,15 @@ defmodule Symphony.AgentProfileRegistry do
   defp profile_path(config) do
     config.agent_profiles_path ||
       Path.join(config.workspace_root || System.tmp_dir!(), "agent_profiles.json")
+  end
+
+  defp metadata_payload(state) do
+    %{
+      path: state.path,
+      count: map_size(state.profiles),
+      exists: File.exists?(state.path),
+      writable: writable?(state.path)
+    }
   end
 
   defp load_profiles(path) do

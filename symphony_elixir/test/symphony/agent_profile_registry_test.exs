@@ -72,6 +72,39 @@ defmodule Symphony.AgentProfileRegistryTest do
     assert persisted["name"] == "Cello Builder"
   end
 
+  test "reload_config switches storage path and reloads profiles", %{
+    server: server,
+    config: config
+  } do
+    assert {:ok, _profile} = AgentProfileRegistry.create(%{"name" => "Original Violin"}, server)
+
+    new_path = Path.join(Path.dirname(config.agent_profiles_path), "reloaded-profiles.json")
+
+    File.write!(
+      new_path,
+      Jason.encode!(%{
+        "profiles" => [
+          %{
+            "id" => "reload-judge",
+            "name" => "Reload Judge",
+            "role" => "Judge",
+            "section" => "Piano",
+            "instrument_name" => "Piano"
+          }
+        ]
+      })
+    )
+
+    assert {:ok, meta} =
+             AgentProfileRegistry.reload_config(%{config | agent_profiles_path: new_path}, server)
+
+    assert meta.path == new_path
+    assert meta.count == 1
+    assert {:error, :not_found} = AgentProfileRegistry.get("original-violin", server)
+    assert {:ok, profile} = AgentProfileRegistry.get("reload-judge", server)
+    assert profile["instrument_name"] == "Piano"
+  end
+
   test "ensure_many creates and refreshes deterministic stage profiles", %{server: server} do
     profiles = [
       %{

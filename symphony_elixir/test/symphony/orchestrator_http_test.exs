@@ -60,7 +60,11 @@ defmodule Symphony.OrchestratorHttpTest do
 
   test "provider selection endpoint accepts direct codex" do
     conn =
-      conn(:post, "/api/orchestration/providers/select", Jason.encode!(%{provider: "direct_codex"}))
+      conn(
+        :post,
+        "/api/orchestration/providers/select",
+        Jason.encode!(%{provider: "direct_codex"})
+      )
       |> put_req_header("content-type", "application/json")
       |> Symphony.Http.Router.call([])
 
@@ -81,6 +85,57 @@ defmodule Symphony.OrchestratorHttpTest do
     body = Jason.decode!(conn.resp_body)
     assert body["error"]["code"] == "agent_zero_adapter_pending"
     assert body["provider_status"]["active_provider"] == "direct_codex"
+  end
+
+  test "workflow reload endpoint reloads runtime config and ensures stage agents" do
+    old_workflow_path = System.get_env("SYMPHONY_WORKFLOW_PATH")
+    old_config = Symphony.Config.load()
+
+    dir =
+      Path.join(System.tmp_dir!(), "symphony-http-reload-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(dir)
+    workflow_path = Path.join(dir, "WORKFLOW.md")
+
+    {:ok, content} =
+      Symphony.Workflow.Files.render_template("linear_codex_judge_refiner", %{
+        "name" => "http-reload-orchestra",
+        "objective" => "Reload without restarting the desktop backend."
+      })
+
+    File.write!(workflow_path, content)
+    System.put_env("SYMPHONY_WORKFLOW_PATH", workflow_path)
+
+    on_exit(fn ->
+      restore_env("SYMPHONY_WORKFLOW_PATH", old_workflow_path)
+
+      case old_config do
+        {:ok, config} ->
+          _ = Symphony.AgentProfileRegistry.reload_config(config)
+          _ = Symphony.Orchestrator.reload_config(config)
+
+        _ ->
+          :ok
+      end
+
+      File.rm_rf!(dir)
+    end)
+
+    conn = conn(:post, "/api/workflow/reload") |> Symphony.Http.Router.call([])
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+    assert body["reloaded"] == true
+    assert body["workflow"]["path"] == Path.expand(workflow_path)
+    assert body["workflow"]["polling"]["interval_ms"] == 30_000
+    assert body["agent_registry"]["path"] == Path.join(dir, "agent_profiles.json")
+    assert body["agent_profile_changes"]["count"] == 4
+
+    conn = conn(:get, "/api/agents") |> Symphony.Http.Router.call([])
+    listed_ids = Enum.map(Jason.decode!(conn.resp_body)["profiles"], & &1["id"])
+    assert "workflow-builder" in listed_ids
+    assert "workflow-judge" in listed_ids
+    assert "workflow-refiner" in listed_ids
   end
 
   defp restore_env(key, nil), do: System.delete_env(key)

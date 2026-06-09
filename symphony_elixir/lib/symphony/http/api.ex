@@ -288,13 +288,35 @@ defmodule Symphony.Http.Api do
   end
 
   def reload_workflow(conn) do
-    json(conn, 202, %{
-      ok: true,
-      reloaded: false,
-      message:
-        "Runtime workflow reload is not wired yet; restart the service to load WORKFLOW.md changes.",
-      workflow: workflow_metadata()
-    })
+    with {:ok, config} <- Symphony.Config.load(),
+         {:ok, orchestrator} <- Symphony.Orchestrator.reload_config(config),
+         {:ok, registry} <- Symphony.AgentProfileRegistry.reload_config(config),
+         {:ok, agent_payload} <- ensure_active_workflow_agents(config) do
+      json(
+        conn,
+        200,
+        %{
+          ok: true,
+          reloaded: true,
+          message: "Runtime workflow configuration reloaded.",
+          workflow: workflow_metadata(config),
+          orchestrator: Map.take(orchestrator, [:counts, :polling]),
+          agent_registry: registry
+        }
+        |> Map.merge(agent_payload)
+      )
+    else
+      {:error, :active_runs, message, data} ->
+        json(conn, 409, %{
+          ok: false,
+          reloaded: false,
+          error: %{code: "active_runs", message: message, data: data},
+          workflow: workflow_metadata()
+        })
+
+      {:error, reason} ->
+        workflow_error(conn, reason)
+    end
   end
 
   def refresh(conn) do
@@ -432,6 +454,16 @@ defmodule Symphony.Http.Api do
     end
   end
 
+  defp ensure_active_workflow_agents(config) do
+    case File.read(config.workflow_path) do
+      {:ok, content} ->
+        ensure_workflow_agents(%{"content" => content}, %{content: content})
+
+      {:error, reason} ->
+        {:error, {:workflow_reload_failed, "workflow could not be read: #{inspect(reason)}"}}
+    end
+  end
+
   defp workflow_error(conn, :not_found), do: error(conn, 404, "workflow not found")
 
   defp workflow_error(conn, :template_not_found),
@@ -474,8 +506,8 @@ defmodule Symphony.Http.Api do
     end
   end
 
-  defp workflow_metadata do
-    c = current_config()
+  defp workflow_metadata(config \\ nil) do
+    c = config || current_config()
     validation = Symphony.Config.validate_dispatch(c)
 
     %{

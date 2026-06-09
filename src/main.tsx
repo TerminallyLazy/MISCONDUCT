@@ -1974,7 +1974,8 @@ function WorkflowPanel({ base, state, cards, enabled }: { base: string; state?: 
     mutationFn: async () => api<Record<string, unknown>>(base, '/api/workflows', { method: 'POST', body: JSON.stringify({ path: targetPath, content: draft, template_id: templateId, overwrite }) }, 8000),
     onSuccess: data => {
       setWorkflowError(null);
-      log(`Saved ${String(data.path || targetPath)}${data.restart_required ? ' · backend restart required to activate' : ''}`);
+      const activationHint = data.reload_required ? ' · reload runtime to activate' : data.restart_required ? ' · backend restart required to activate' : '';
+      log(`Saved ${String(data.path || targetPath)}${activationHint}`);
       const changes = data.agent_profile_changes as { count?: number } | undefined;
       if (changes?.count) log(`Stage agents ready: ${changes.count} profiles created or refreshed.`);
       queryClient.invalidateQueries({ queryKey: ['workflowFiles', base] });
@@ -1989,7 +1990,22 @@ function WorkflowPanel({ base, state, cards, enabled }: { base: string; state?: 
     onError: err => fail('Move failed', err)
   });
 
-  const busy = !enabled || generate.isPending || validateDraft.isPending || previewDraft.isPending || writeDraft.isPending || moveWorkflow.isPending;
+  const reloadWorkflow = useMutation({
+    mutationFn: async () => api<Record<string, unknown>>(base, '/api/workflow/reload', { method: 'POST', body: '{}' }, 10_000),
+    onSuccess: data => {
+      setWorkflowError(null);
+      log(String(data.message || 'Runtime workflow reloaded.'));
+      const changes = data.agent_profile_changes as { count?: number } | undefined;
+      if (changes?.count) log(`Stage agents ready: ${changes.count} profiles created or refreshed.`);
+      queryClient.invalidateQueries({ queryKey: ['workflowFiles', base] });
+      queryClient.invalidateQueries({ queryKey: ['agentProfiles', base] });
+      queryClient.invalidateQueries({ queryKey: ['state', base] });
+      queryClient.invalidateQueries({ queryKey: ['providerStatus', base] });
+    },
+    onError: err => fail('Reload failed', err)
+  });
+
+  const busy = !enabled || generate.isPending || validateDraft.isPending || previewDraft.isPending || writeDraft.isPending || moveWorkflow.isPending || reloadWorkflow.isPending;
   const dispatchErrors = validation?.dispatch?.errors || [];
   const review = preview?.review || (validation ? { verdict: validation.valid ? 'pass' : validation.writable ? 'needs_refinement' : 'blocked', judge: { findings: validation.errors, warnings: validation.warnings } } : null);
 
@@ -2045,6 +2061,7 @@ function WorkflowPanel({ base, state, cards, enabled }: { base: string; state?: 
         <label className="checkRow"><input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} /> Allow overwrite after explicit confirmation</label>
         <div className="formActions">
           <button className="button primary" disabled={busy || !draft} onClick={() => writeDraft.mutate()}>Save WORKFLOW.md</button>
+          <button className="button secondary" disabled={busy} onClick={() => reloadWorkflow.mutate()}>Reload runtime</button>
           <button className="button secondary" disabled={busy} onClick={() => filesQuery.refetch()}>Refresh list</button>
           <button className="button danger" disabled={busy || !targetPath} onClick={() => moveWorkflow.mutate()}>Move to archive</button>
         </div>

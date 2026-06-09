@@ -14,6 +14,9 @@ defmodule Symphony.Orchestrator do
   def enqueue_issue(issue, attempt \\ nil, server \\ __MODULE__),
     do: GenServer.call(server, {:enqueue_issue, issue, attempt}, 30_000)
 
+  def reload_config(config, server \\ __MODULE__),
+    do: GenServer.call(server, {:reload_config, config}, 30_000)
+
   def refresh(server \\ __MODULE__), do: GenServer.cast(server, :tick)
   def cancel(issue_id, server \\ __MODULE__), do: GenServer.call(server, {:cancel, issue_id})
 
@@ -44,6 +47,41 @@ defmodule Symphony.Orchestrator do
 
   @impl true
   def handle_call(:snapshot, _from, state), do: {:reply, to_snapshot(state), state}
+
+  def handle_call({:reload_config, config}, _from, state) do
+    if map_size(state.running) > 0 do
+      {:reply,
+       {:error, :active_runs, "Workflow reload is blocked while agent runs are active.",
+        %{running: map_size(state.running)}}, state}
+    else
+      if state.poll_timer_ref, do: Process.cancel_timer(state.poll_timer_ref)
+
+      next =
+        %{
+          state
+          | config: config,
+            poll_interval_ms: config.poll_interval_ms,
+            max_concurrent_agents: config.max_concurrent_agents,
+            poll_timer_ref: nil,
+            last_poll_error: nil
+        }
+
+      publish_event(next, "workflow.reload.completed", %{
+        stage: "workflow",
+        status: "completed",
+        message: "Runtime workflow configuration reloaded.",
+        data: %{
+          workflow_path: config.workflow_path,
+          workspace_root: config.workspace_root,
+          poll_interval_ms: config.poll_interval_ms,
+          max_concurrent_agents: config.max_concurrent_agents
+        }
+      })
+
+      scheduled = schedule_poll(next)
+      {:reply, {:ok, to_snapshot(scheduled)}, scheduled}
+    end
+  end
 
   def handle_call({:enqueue_issue, issue, attempt}, _from, state),
     do: dispatch(issue, attempt, state)

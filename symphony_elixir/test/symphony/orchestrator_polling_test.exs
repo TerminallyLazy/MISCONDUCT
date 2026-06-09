@@ -705,6 +705,68 @@ defmodule Symphony.OrchestratorPollingTest do
     assert snap.counts.retrying == 0
   end
 
+  test "reload_config updates idle runtime settings", %{dir: dir} do
+    ensure_builder_profile()
+
+    {:ok, pid} =
+      start_orchestrator(dir,
+        poll_interval_ms: 0,
+        workflow_config: workflow_config()
+      )
+
+    {:ok, config} =
+      Symphony.Config.from_workflow(Path.join(dir, "WORKFLOW.md"), %Workflow{
+        config:
+          workflow_config()
+          |> Map.put("polling", %{"interval_ms" => 125})
+          |> Map.put("agent", %{"max_concurrent_agents" => 2}),
+        prompt_template: "Reloaded {{ issue.identifier }}"
+      })
+
+    assert {:ok, snap} = Orchestrator.reload_config(config, pid)
+    assert snap.polling.interval_ms == 125
+
+    reload_event =
+      Events.list(50)
+      |> Enum.find(&(&1.type == "workflow.reload.completed"))
+
+    assert reload_event.status == "completed"
+    assert get_in(reload_event, [:data, "poll_interval_ms"]) == 125
+    assert get_in(reload_event, [:data, "max_concurrent_agents"]) == 2
+  end
+
+  test "reload_config blocks while runs are active", %{dir: dir} do
+    issue = issue("poll-reload-active", "TER-RELOAD-ACTIVE", "Block active reload")
+    Application.put_env(:symphony_elixir, :test_linear_issues, [issue])
+    ensure_builder_profile()
+
+    {:ok, pid} =
+      start_orchestrator(dir,
+        poll_interval_ms: 0,
+        workflow_config: workflow_config()
+      )
+
+    Orchestrator.refresh(pid)
+
+    assert eventually(fn ->
+             snap = Orchestrator.snapshot(pid)
+             snap.counts.running == 1
+           end)
+
+    {:ok, config} =
+      Symphony.Config.from_workflow(Path.join(dir, "WORKFLOW.md"), %Workflow{
+        config:
+          workflow_config()
+          |> Map.put("polling", %{"interval_ms" => 125}),
+        prompt_template: "Reloaded {{ issue.identifier }}"
+      })
+
+    assert {:error, :active_runs, message, %{running: 1}} =
+             Orchestrator.reload_config(config, pid)
+
+    assert message =~ "blocked while agent runs are active"
+  end
+
   defp start_orchestrator(dir, opts) do
     name = :"poll_orchestrator_#{System.unique_integer([:positive])}"
 
