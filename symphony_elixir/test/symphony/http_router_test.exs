@@ -291,6 +291,130 @@ defmodule Symphony.Http.RouterTest do
     assert generated["content"] =~ "seat: \"front-right\""
   end
 
+  test "workflow save refresh preserves operator-edited stage and music profile fields" do
+    suffix = "#{System.system_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+    profile_id = "router-preserve-#{suffix}"
+    path_root = "tmp-router-preserve-stage-#{suffix}"
+    path = Path.join(path_root, "WORKFLOW.md")
+
+    content = """
+    ---
+    name: preserve-stage-profile
+    tracker:
+      kind: linear
+      api_key: $LINEAR_API_KEY
+      project_slug: TEST
+    workspace:
+      root: ./tmp-router-preserve-workspaces
+    agent:
+      profiles_path: ./agent_profiles.json
+    builder:
+      provider: codex
+      profile: #{profile_id}
+    judge:
+      provider: codex
+      profile: #{profile_id}
+    refiner:
+      provider: codex
+      profile: #{profile_id}
+    stage_agents:
+      - profile: #{profile_id}
+        name: Preserve Builder #{suffix}
+        role: Builder
+        profile_key: #{profile_id}
+        section: Strings
+        instrument: Violin
+        capabilities: [implementation, codex]
+        music:
+          motif: Workflow motif
+          dynamic: mezzo-piano
+          register: middle
+        stage:
+          section: strings
+          seat: front-center
+    ---
+    # Workflow
+
+    ## Objective
+    Preserve edited stage placement and music when WORKFLOW.md refreshes agents.
+
+    ## Inputs
+    - Synthetic router test workflow.
+
+    ## Agents
+    - #{profile_id}: generated from stage_agents.
+
+    ## Phases
+    - Build: execute scoped work.
+    - Judge: review output.
+    - Refine: fix findings.
+
+    ## Validation Gates
+    - Preserve operator-owned profile fields.
+
+    ## Guardrails
+    - No external tracker mutation.
+    """
+
+    on_exit(fn ->
+      _ = Symphony.AgentProfileRegistry.delete(profile_id)
+      File.rm_rf!(path_root)
+    end)
+
+    conn =
+      conn(
+        :post,
+        "/api/workflows",
+        Jason.encode!(%{path: path, content: content, overwrite: true})
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 201
+    created = Jason.decode!(conn.resp_body)
+    assert created["agent_profile_changes"]["created"] == [profile_id]
+
+    conn =
+      conn(
+        :patch,
+        "/api/agents/#{profile_id}",
+        Jason.encode!(%{
+          section: "Bells",
+          instrument_name: "Glockenspiel",
+          music: %{motif: "Operator cue", dynamic: "forte"},
+          stage_position: %{section: "bells", seat: "back-center"}
+        })
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 200
+
+    conn =
+      conn(
+        :post,
+        "/api/workflows",
+        Jason.encode!(%{path: path, content: content, overwrite: true})
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 201
+    refreshed = Jason.decode!(conn.resp_body)
+    assert refreshed["agent_profile_changes"]["updated"] == [profile_id]
+
+    conn = conn(:get, "/api/agents/#{profile_id}") |> Symphony.Http.Router.call([])
+    assert conn.status == 200
+    profile = Jason.decode!(conn.resp_body)["profile"]
+    assert profile["section"] == "Bells"
+    assert profile["instrument_name"] == "Glockenspiel"
+    assert profile["music"]["motif"] == "Operator cue"
+    assert profile["music"]["dynamic"] == "forte"
+    assert profile["music"]["register"] == "high"
+    assert profile["stage_position"] == %{"section" => "bells", "seat" => "back-center"}
+    assert profile["capabilities"] == ["implementation", "codex"]
+  end
+
   test "workflow generation flags a missing selected role profile" do
     missing_profile = "missing-builder-#{System.unique_integer([:positive])}"
 

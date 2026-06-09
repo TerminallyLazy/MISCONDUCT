@@ -18,6 +18,16 @@ defmodule Symphony.AgentProfileRegistry do
     "Piano" => "mid-center",
     "Bells" => "back-center"
   }
+  @operator_owned_fields ~w(
+    section
+    instrument_name
+    model
+    workspace_key
+    assignment_policy
+    max_concurrent_tasks
+    music
+    stage_position
+  )
 
   def start_link(opts) do
     config = Keyword.fetch!(opts, :config)
@@ -237,7 +247,7 @@ defmodule Symphony.AgentProfileRegistry do
   defp ensure_profile(id, attrs, profiles) do
     case Map.fetch(profiles, id) do
       {:ok, current} ->
-        with {:ok, profile} <- normalize(Map.merge(current, attrs), id) do
+        with {:ok, profile} <- normalize(merge_ensured_profile(current, attrs), id) do
           {profile, :updated}
         end
 
@@ -246,6 +256,20 @@ defmodule Symphony.AgentProfileRegistry do
           {profile, :created}
         end
     end
+  end
+
+  defp merge_ensured_profile(current, attrs) do
+    merged = Map.merge(current, attrs)
+
+    Enum.reduce(@operator_owned_fields, merged, fn field, acc ->
+      case Map.fetch(current, field) do
+        {:ok, value} ->
+          if present_profile_value?(value), do: Map.put(acc, field, value), else: acc
+
+        :error ->
+          acc
+      end
+    end)
   end
 
   defp normalize(attrs, forced_id) when is_map(attrs) do
@@ -337,6 +361,15 @@ defmodule Symphony.AgentProfileRegistry do
         map
     end
   end
+
+  defp present_profile_value?(nil), do: false
+
+  defp present_profile_value?(value) when is_binary(value),
+    do: String.trim(value) != ""
+
+  defp present_profile_value?(value) when is_map(value), do: map_size(value) > 0
+  defp present_profile_value?(value) when is_list(value), do: value != []
+  defp present_profile_value?(_value), do: true
 
   defp policy(raw) when is_map(raw) do
     raw = stringify(raw)

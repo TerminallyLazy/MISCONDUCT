@@ -128,7 +128,9 @@ defmodule Symphony.AgentProfileRegistryTest do
     assert profile["instrument_name"] == "Piano"
   end
 
-  test "ensure_many creates and refreshes deterministic stage profiles", %{server: server} do
+  test "ensure_many creates workflow profiles while preserving operator stage and music edits", %{
+    server: server
+  } do
     profiles = [
       %{
         "id" => "workflow-judge",
@@ -156,6 +158,18 @@ defmodule Symphony.AgentProfileRegistryTest do
     assert created.updated == []
     assert Enum.map(created.profiles, & &1["id"]) == ["workflow-judge", "workflow-refiner"]
 
+    assert {:ok, _edited} =
+             AgentProfileRegistry.update(
+               "workflow-judge",
+               %{
+                 "section" => "Bells",
+                 "instrument_name" => "Glockenspiel",
+                 "music" => %{"motif" => "Operator cue", "dynamic" => "forte"},
+                 "stage_position" => %{"section" => "bells", "seat" => "back-center"}
+               },
+               server
+             )
+
     assert {:ok, refreshed} =
              AgentProfileRegistry.ensure_many(
                [
@@ -175,10 +189,13 @@ defmodule Symphony.AgentProfileRegistryTest do
     assert refreshed.updated == ["workflow-judge"]
     assert {:ok, [judge, refiner]} = AgentProfileRegistry.list(server)
     assert refiner["id"] == "workflow-refiner"
-    assert judge["instrument_name"] == "Concert Grand"
+    assert judge["section"] == "Bells"
+    assert judge["instrument_name"] == "Glockenspiel"
+    assert judge["music"]["motif"] == "Operator cue"
+    assert judge["music"]["dynamic"] == "forte"
+    assert judge["music"]["register"] == "high"
+    assert judge["stage_position"] == %{"section" => "bells", "seat" => "back-center"}
     assert judge["capabilities"] == ["review", "safety"]
-    assert judge["stage_position"] == %{"section" => "piano", "seat" => "mid-center"}
-    assert judge["music"]["dynamic"] == "mezzo-piano"
     assert refiner["stage_position"] == %{"section" => "brass", "seat" => "mid-right"}
   end
 end
