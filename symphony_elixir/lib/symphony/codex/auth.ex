@@ -25,6 +25,7 @@ defmodule Symphony.Codex.Auth do
           authenticated: false,
           state: "cli_missing",
           status: "cli_missing",
+          auth_phase: "cli_missing",
           cli_available: false,
           command: command,
           configured_command: command,
@@ -49,6 +50,7 @@ defmodule Symphony.Codex.Auth do
           authenticated: auth.connected,
           state: auth.state,
           status: auth.state,
+          auth_phase: auth.state,
           cli_available: true,
           command: command,
           configured_command: command,
@@ -80,23 +82,36 @@ defmodule Symphony.Codex.Auth do
 
         case run_cli(spec, ["login", "--device-auth"], 12_000) do
           {0, out} ->
+            current_status = status(config)
+
+            phase =
+              if current_status.authenticated,
+                do: "authenticated",
+                else: "device_authorization_started"
+
             {:ok,
              %{
                ok: true,
-               state: "login_completed_or_pending",
+               state: phase,
+               auth_phase: phase,
                auth_source: "codex_cli",
                login_command: login_command,
                message:
-                 "Codex CLI login command completed. Click Check status to verify the account.",
+                 if(current_status.authenticated,
+                   do: "Codex CLI login completed and the account is authenticated.",
+                   else:
+                     "Codex CLI device authorization started. Complete the browser flow, then click Check connection."
+                 ),
                output: redact(out),
-               status: status(config)
+               status: current_status
              }}
 
           {code, out} ->
             {:ok,
              %{
                ok: true,
-               state: "manual_required",
+               state: "manual_login_required",
+               auth_phase: "manual_login_required",
                auth_source: "codex_cli",
                login_command: login_command,
                message:
@@ -126,6 +141,7 @@ defmodule Symphony.Codex.Auth do
          %{
            ok: code == 0,
            state: if(code == 0, do: "logged_out", else: "logout_failed"),
+           auth_phase: if(code == 0, do: "signed_out", else: "logout_failed"),
            message:
              if(code == 0,
                do: "Codex CLI logout completed.",
@@ -250,7 +266,7 @@ defmodule Symphony.Codex.Auth do
     cli_probe(spec) || file_probe() ||
       %{
         connected: false,
-        state: "unknown",
+        state: "auth_status_unverified",
         account_label: nil,
         message:
           "Codex CLI is installed, but Symphony could not verify the CLI session. If you already signed in, click Check connection after restarting the app; otherwise run `codex login`."
@@ -260,15 +276,25 @@ defmodule Symphony.Codex.Auth do
   defp cli_probe(spec) do
     probes = [["login", "status"], ["auth", "status"], ["status"], ["whoami"], ["account"]]
 
-    Enum.reduce_while(probes, nil, fn args, _acc ->
+    Enum.reduce_while(probes, nil, fn args, fallback ->
       case run_cli(spec, args, @default_timeout) do
         {0, out} ->
           auth = classify_auth(out)
-          if auth.connected, do: {:halt, auth}, else: {:cont, nil}
+
+          cond do
+            auth.connected -> {:halt, auth}
+            auth.state != "auth_status_unverified" -> {:cont, auth}
+            true -> {:cont, fallback}
+          end
 
         {_code, out} ->
           auth = classify_auth(out)
-          if auth.connected, do: {:halt, auth}, else: {:cont, nil}
+
+          cond do
+            auth.connected -> {:halt, auth}
+            auth.state != "auth_status_unverified" -> {:cont, auth}
+            true -> {:cont, fallback}
+          end
       end
     end)
   end
@@ -330,17 +356,39 @@ defmodule Symphony.Codex.Auth do
     redacted = redact(out)
     down = String.downcase(redacted)
 
+    signed_out =
+      String.contains?(down, "not logged in") or String.contains?(down, "not authenticated") or
+        String.contains?(down, "not signed in") or String.contains?(down, "signed out") or
+        String.contains?(down, "login required") or String.contains?(down, "no active session")
+
+    device_auth =
+      String.contains?(down, "device") and
+        (String.contains?(down, "code") or String.contains?(down, "authorize"))
+
     connected =
-      String.contains?(down, "logged in") or String.contains?(down, "authenticated") or
-        String.contains?(down, "signed in") or String.contains?(down, "already logged in") or
-        String.contains?(down, "login successful") or String.contains?(down, "subscription") or
-        (String.contains?(down, "chatgpt") and not String.contains?(down, "not logged in"))
+      not signed_out and
+        (String.contains?(down, "logged in") or String.contains?(down, "authenticated") or
+           String.contains?(down, "signed in") or String.contains?(down, "already logged in") or
+           String.contains?(down, "login successful") or String.contains?(down, "subscription") or
+           String.contains?(down, "chatgpt"))
+
+    state =
+      cond do
+        connected -> "authenticated"
+        signed_out -> "signed_out"
+        device_auth -> "device_authorization_required"
+        true -> "auth_status_unverified"
+      end
 
     %{
       connected: connected,
-      state: if(connected, do: "authenticated", else: "not_authenticated"),
+      state: state,
       account_label: extract_account(redacted),
-      message: String.trim(redacted)
+      message:
+        case String.trim(redacted) do
+          "" -> "Codex CLI did not return recognizable auth status."
+          message -> message
+        end
     }
   end
 

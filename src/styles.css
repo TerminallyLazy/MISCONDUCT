@@ -593,6 +593,16 @@ textarea.tall { min-height: 150px; }
 .resultPanel h3, .operationLog h3 { margin: 0 0 8px; }
 .resultPanel pre { max-height: 240px; overflow: auto; font-size: 11px; background: #2b2018; color: #ffe8ad; padding: 10px; border: 3px solid var(--ink); }
 .resultPanel ul { margin: 8px 0 0 18px; padding: 0; }
+.rehearsalPanel { background: #fff8e8; }
+.rehearsalHeader { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.rehearsalHeader p { margin: 0; }
+.rehearsalChecks { display: grid; gap: 8px; margin-top: 10px; }
+.rehearsalCheckRow { display: grid; grid-template-columns: 20px 1fr; gap: 8px; align-items: start; border: 2px solid rgba(43, 31, 58, .18); background: #fffdf5; padding: 8px; }
+.rehearsalCheckRow.pass { background: #e7f4c8; }
+.rehearsalCheckRow.warning { background: #fff2c7; }
+.rehearsalCheckRow.blocked { background: #ffe0dd; }
+.rehearsalCheckRow b, .rehearsalCheckRow span { display: block; min-width: 0; overflow-wrap: anywhere; }
+.rehearsalCheckRow span { color: var(--muted); font-size: 12px; line-height: 1.35; }
 .workflowRow { display: flex; justify-content: space-between; gap: 8px; border-top: 2px solid rgba(60,40,25,.15); padding: 7px 0; }
 .workflowRow span { color: var(--muted); font-size: 11px; text-transform: uppercase; }
 .operationLog p { margin: 5px 0; font-size: 12px; }

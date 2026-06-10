@@ -807,7 +807,8 @@ type CodexAuthPayload = {
   connected?: boolean;
   authenticated?: boolean;
   state?: string;
-  status?: string;
+  status?: string | Record<string, unknown>;
+  auth_phase?: string;
   message?: string;
   version?: string;
   cli_version?: string;
@@ -865,6 +866,24 @@ const ProviderStatusSchema = z.object({
 type ProviderStatusPayload = z.infer<typeof ProviderStatusSchema>;
 type Provider = z.infer<typeof ProviderSchema>;
 
+const RehearsalCheckSchema = z.object({
+  ok: z.boolean().optional(),
+  ready: z.boolean().default(false),
+  status: z.string().default('blocked'),
+  generated_at: z.string().optional(),
+  checks: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    status: z.string(),
+    message: z.string().default(''),
+    data: z.any().optional()
+  }).passthrough()).default([]),
+  blockers: z.array(z.string()).default([]),
+  warnings: z.array(z.string()).default([])
+}).passthrough();
+
+type RehearsalCheckPayload = z.infer<typeof RehearsalCheckSchema>;
+
 type OrchestrationEvent = {
   id: string;
   sequence?: number;
@@ -912,6 +931,15 @@ function useProviderStatus(base: string, enabled = true) {
     queryKey: ['providerStatus', base],
     queryFn: async () => ProviderStatusSchema.parse(await api(base, '/api/orchestration/providers')),
     refetchInterval: 20_000,
+    enabled
+  });
+}
+
+function useRehearsalCheck(base: string, enabled = true) {
+  return useQuery<RehearsalCheckPayload>({
+    queryKey: ['rehearsalCheck', base],
+    queryFn: async () => RehearsalCheckSchema.parse(await api(base, '/api/rehearsal')),
+    refetchInterval: 15_000,
     enabled
   });
 }
@@ -1002,6 +1030,29 @@ function providerLabel(provider?: string) {
   return 'Symphony';
 }
 
+function authPhaseLabel(phase?: string) {
+  const normalized = String(phase || '').replace(/_/g, ' ');
+  if (!normalized) return 'auth phase unknown';
+  return normalized.replace(/\b\w/g, char => char.toUpperCase());
+}
+
+function codexActionToStatus(payload: CodexAuthPayload): CodexAuthPayload {
+  const nested = payload.status && typeof payload.status === 'object'
+    ? payload.status as CodexAuthPayload
+    : {};
+  const phase = String(payload.auth_phase || payload.state || nested.auth_phase || nested.state || nested.status || '');
+
+  return {
+    ...nested,
+    ...payload,
+    state: phase || String(nested.state || ''),
+    status: phase || String(nested.status || ''),
+    auth_phase: phase || String(nested.auth_phase || ''),
+    message: String(payload.message || nested.message || ''),
+    login_command: String(payload.login_command || nested.login_command || '')
+  };
+}
+
 function apiModeLabel(mode: ApiMode) {
   if (mode === 'desktop') return 'desktop bundled backend';
   if (mode === 'proxy') return 'dev proxy';
@@ -1023,6 +1074,7 @@ function App() {
   const codexAuth = useCodexAuth(base, apiReady);
   const orchestrationEvents = useOrchestrationEvents(base, apiReady);
   const providerStatus = useProviderStatus(base, apiReady);
+  const rehearsalCheck = useRehearsalCheck(base, apiReady);
   const backendRuntime = useBackendRuntime(desktopBridgeAvailable);
   const [debugPayload, setDebugPayload] = useState<string | null>(null);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
@@ -1135,15 +1187,27 @@ function App() {
   });
   const startCodexLogin = useMutation({
     mutationFn: () => api<CodexAuthPayload>(base, '/api/codex/auth/login/start', { method: 'POST', body: '{}' }, 15_000),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['codexAuth', base] })
+    onSuccess: payload => {
+      queryClient.setQueryData(['codexAuth', base], codexActionToStatus(payload));
+      queryClient.invalidateQueries({ queryKey: ['codexAuth', base] });
+      queryClient.invalidateQueries({ queryKey: ['rehearsalCheck', base] });
+    }
   });
   const checkCodexAuth = useMutation({
     mutationFn: () => api<CodexAuthPayload>(base, '/api/codex/auth/check', { method: 'POST', body: '{}' }, 10_000),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['codexAuth', base] })
+    onSuccess: payload => {
+      queryClient.setQueryData(['codexAuth', base], codexActionToStatus(payload));
+      queryClient.invalidateQueries({ queryKey: ['codexAuth', base] });
+      queryClient.invalidateQueries({ queryKey: ['rehearsalCheck', base] });
+    }
   });
   const logoutCodex = useMutation({
     mutationFn: () => api<CodexAuthPayload>(base, '/api/codex/auth/logout', { method: 'POST', body: '{}' }, 10_000),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['codexAuth', base] })
+    onSuccess: payload => {
+      queryClient.setQueryData(['codexAuth', base], codexActionToStatus(payload));
+      queryClient.invalidateQueries({ queryKey: ['codexAuth', base] });
+      queryClient.invalidateQueries({ queryKey: ['rehearsalCheck', base] });
+    }
   });
   const selectProvider = useMutation({
     mutationFn: async (provider: string) =>
@@ -1155,6 +1219,7 @@ function App() {
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providerStatus'] });
+      queryClient.invalidateQueries({ queryKey: ['rehearsalCheck'] });
       queryClient.invalidateQueries({ queryKey: ['state'] });
       queryClient.invalidateQueries({ queryKey: ['kanban'] });
     }
@@ -1267,6 +1332,7 @@ function App() {
           audioEnabled={audioEnabled}
           onToggleAudio={() => setAudioEnabled(value => !value)}
           orchestraAudio={orchestraAudio}
+          rehearsalCheck={rehearsalCheck.data}
         />
         <MetricsStrip state={state.data} online={!offline && !apiStarting && !apiStartupFailed} reconnecting={reconnecting} />
         {apiStarting && <StartupBanner />}
@@ -1304,7 +1370,19 @@ function App() {
               onDeleteProfile={id => deleteAgentProfile.mutateAsync(id)}
             />
           )}
-          {tab === 'workflow' && <WorkflowPanel base={base} state={state.data} cards={cards} profiles={profiles} enabled={apiReady} />}
+          {tab === 'workflow' && (
+            <WorkflowPanel
+              base={base}
+              state={state.data}
+              cards={cards}
+              profiles={profiles}
+              enabled={apiReady}
+              rehearsalCheck={rehearsalCheck.data}
+              rehearsalLoading={rehearsalCheck.isLoading}
+              rehearsalError={rehearsalCheck.error instanceof Error ? rehearsalCheck.error.message : rehearsalCheck.isError ? 'Unable to run rehearsal check.' : undefined}
+              onRefreshRehearsal={() => rehearsalCheck.refetch()}
+            />
+          )}
           {tab === 'ledger' && (
             <EventLedger
               events={orchestrationEvents.events}
@@ -1370,7 +1448,8 @@ function ConcertHeader({
   busy,
   audioEnabled,
   onToggleAudio,
-  orchestraAudio
+  orchestraAudio,
+  rehearsalCheck
 }: {
   offline: boolean;
   apiStarting: boolean;
@@ -1383,9 +1462,19 @@ function ConcertHeader({
   audioEnabled: boolean;
   onToggleAudio: () => void;
   orchestraAudio: OrchestraAudioState;
+  rehearsalCheck?: RehearsalCheckPayload;
 }) {
   const eventLive = eventStatus === 'live';
   const eventReconnecting = eventStatus === 'reconnecting';
+  const rehearsalReady = rehearsalCheck?.ready;
+  const rehearsalStatus = apiStarting
+    ? 'rehearsal waiting'
+    : rehearsalReady
+      ? 'ready to conduct'
+      : rehearsalCheck?.status
+        ? `rehearsal ${rehearsalCheck.status.replace(/_/g, ' ')}`
+        : 'rehearsal unavailable';
+  const rehearsalIssue = rehearsalCheck?.blockers[0] || rehearsalCheck?.warnings[0] || 'Ready-to-conduct rehearsal check';
   const eventStatusLabel = apiStarting
     ? 'events waiting for backend'
     : eventLive
@@ -1406,6 +1495,9 @@ function ConcertHeader({
       <div className="actions">
         <span className={`pill eventPill ${eventLive ? 'active' : eventReconnecting ? 'warning' : 'neutral'}`} title={lastEvent?.message || 'Provider-neutral orchestration event stream'}>
           <Activity size={14} /> {eventStatusLabel} · {eventCount}
+        </span>
+        <span className={`pill ${rehearsalReady ? 'success' : rehearsalCheck ? 'warning' : 'neutral'}`} title={rehearsalIssue}>
+          <CheckCircle2 size={14} /> {rehearsalStatus}
         </span>
         <span className={`pill audioPill ${audioEnabled ? 'active' : 'neutral'}`} title={orchestraAudio.error || 'Generated from live agent cards'}>
           <Waves size={14} /> {audioEnabled ? `${orchestraAudio.activeVoices} voices` : 'orchestra muted'}
@@ -2114,7 +2206,27 @@ function AgentProfileForm({ profile, busy, onSave, onCancel, onDelete }: { profi
   );
 }
 
-function WorkflowPanel({ base, state, cards, profiles, enabled }: { base: string; state?: SymphonyState; cards: Card[]; profiles: AgentProfile[]; enabled: boolean }) {
+function WorkflowPanel({
+  base,
+  state,
+  cards,
+  profiles,
+  enabled,
+  rehearsalCheck,
+  rehearsalLoading,
+  rehearsalError,
+  onRefreshRehearsal
+}: {
+  base: string;
+  state?: SymphonyState;
+  cards: Card[];
+  profiles: AgentProfile[];
+  enabled: boolean;
+  rehearsalCheck?: RehearsalCheckPayload;
+  rehearsalLoading?: boolean;
+  rehearsalError?: string;
+  onRefreshRehearsal: () => void;
+}) {
   const templatesQuery = useWorkflowTemplates(base, enabled);
   const filesQuery = useWorkflowFiles(base, enabled);
   const [templateId, setTemplateId] = useState('linear_codex_judge_refiner');
@@ -2182,6 +2294,7 @@ function WorkflowPanel({ base, state, cards, profiles, enabled }: { base: string
       log(`Generated ${data.filename || 'WORKFLOW.md'} from ${data.template_id || templateId}`);
       if (data.agent_profile_changes?.count) log(`Stage agents ready: ${data.agent_profile_changes.count} profiles created or refreshed.`);
       queryClient.invalidateQueries({ queryKey: ['agentProfiles', base] });
+      queryClient.invalidateQueries({ queryKey: ['rehearsalCheck', base] });
     },
     onError: err => fail('Generate failed', err)
   });
@@ -2208,6 +2321,7 @@ function WorkflowPanel({ base, state, cards, profiles, enabled }: { base: string
       if (changes?.count) log(`Stage agents ready: ${changes.count} profiles created or refreshed.`);
       queryClient.invalidateQueries({ queryKey: ['workflowFiles', base] });
       queryClient.invalidateQueries({ queryKey: ['agentProfiles', base] });
+      queryClient.invalidateQueries({ queryKey: ['rehearsalCheck', base] });
     },
     onError: err => fail('Save failed', err)
   });
@@ -2229,6 +2343,7 @@ function WorkflowPanel({ base, state, cards, profiles, enabled }: { base: string
       queryClient.invalidateQueries({ queryKey: ['agentProfiles', base] });
       queryClient.invalidateQueries({ queryKey: ['state', base] });
       queryClient.invalidateQueries({ queryKey: ['providerStatus', base] });
+      queryClient.invalidateQueries({ queryKey: ['rehearsalCheck', base] });
     },
     onError: err => fail('Reload failed', err)
   });
@@ -2294,6 +2409,13 @@ function WorkflowPanel({ base, state, cards, profiles, enabled }: { base: string
           <code>{filesQuery.data?.root || (enabled ? 'loading…' : 'waiting for desktop backend')}</code>
           <small>Tauri stays an HTTP client; file writes are backend-mediated and path-safe.</small>
         </div>
+        <RehearsalChecklist
+          rehearsalCheck={rehearsalCheck}
+          loading={Boolean(rehearsalLoading)}
+          error={rehearsalError}
+          disabled={busy}
+          onRefresh={onRefreshRehearsal}
+        />
         <label className="checkRow"><input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} /> Allow overwrite after explicit confirmation</label>
         <div className="formActions">
           <button className="button primary" disabled={busy || !draft} onClick={() => writeDraft.mutate()}>Save WORKFLOW.md</button>
@@ -2331,6 +2453,57 @@ function WorkflowPanel({ base, state, cards, profiles, enabled }: { base: string
         </div>
       </aside>
     </section>
+  );
+}
+
+function RehearsalChecklist({
+  rehearsalCheck,
+  loading,
+  error,
+  disabled,
+  onRefresh
+}: {
+  rehearsalCheck?: RehearsalCheckPayload;
+  loading: boolean;
+  error?: string;
+  disabled: boolean;
+  onRefresh: () => void;
+}) {
+  const checks = rehearsalCheck?.checks || [];
+  const status = rehearsalCheck?.ready ? 'ready to conduct' : rehearsalCheck?.status ? rehearsalCheck.status.replace(/_/g, ' ') : loading ? 'checking' : 'not checked';
+
+  return (
+    <div className="rehearsalPanel resultPanel">
+      <div className="rehearsalHeader">
+        <div>
+          <h3>Ready to Conduct</h3>
+          <p className="subtle">{status}</p>
+        </div>
+        <button className="button secondary" disabled={disabled} onClick={onRefresh}><RefreshCw size={14} /> Check</button>
+      </div>
+      {error && <p className="formError">{error}</p>}
+      {checks.length > 0 ? (
+        <div className="rehearsalChecks">
+          {checks.map(check => <RehearsalCheckRow key={check.id} check={check} />)}
+        </div>
+      ) : (
+        <p className="subtle">{loading ? 'Running rehearsal checks.' : 'Run the rehearsal check before conducting live work.'}</p>
+      )}
+    </div>
+  );
+}
+
+function RehearsalCheckRow({ check }: { check: RehearsalCheckPayload['checks'][number] }) {
+  const status = check.status || 'warning';
+  const Icon = status === 'pass' ? CheckCircle2 : status === 'blocked' ? AlertTriangle : Clock;
+  return (
+    <div className={`rehearsalCheckRow ${status}`}>
+      <Icon size={16} />
+      <div>
+        <b>{check.label}</b>
+        <span>{check.message}</span>
+      </div>
+    </div>
   );
 }
 
@@ -2536,11 +2709,13 @@ function SettingsPanel({
 }) {
   const [v, setV] = useState(base);
   useEffect(() => setV(base), [base]);
-  const codexState = String(codexAuth?.state || codexAuth?.status || '');
+  const codexRawStatus = typeof codexAuth?.status === 'string' ? codexAuth.status : '';
+  const codexState = String(codexAuth?.auth_phase || codexAuth?.state || codexRawStatus || '');
   const codexConnected = Boolean(codexAuth?.authenticated || codexAuth?.connected || codexState === 'authenticated' || codexState === 'connected');
   const codexAvailable = Boolean(codexAuth?.cli_available ?? codexAuth?.available ?? false);
   const codexVersion = String(codexAuth?.cli_version || codexAuth?.version || 'unknown');
   const codexCommand = String(codexAuth?.configured_command || codexAuth?.command || 'codex');
+  const codexPhaseLabel = authPhaseLabel(codexState || (codexAvailable ? 'signed_out' : 'cli_missing'));
   const codexStatus = codexLoading
     ? 'checking…'
     : codexError
@@ -2548,7 +2723,7 @@ function SettingsPanel({
       : codexConnected
         ? 'Codex Pro connected'
         : codexAvailable
-          ? 'sign-in needed'
+          ? codexPhaseLabel
           : 'Codex CLI missing';
   const backendControlsDisabled = backendBusy || !desktopBridgeAvailable;
   return (
@@ -2634,6 +2809,7 @@ function SettingsPanel({
         <div className="codexStatusGrid">
           <div><span>CLI available</span><b>{codexAvailable ? 'yes' : 'no'}</b></div>
           <div><span>Authenticated</span><b>{codexConnected ? 'yes' : 'no'}</b></div>
+          <div><span>Auth phase</span><b>{codexPhaseLabel}</b></div>
           <div><span>Version</span><b>{codexVersion}</b></div>
           <div><span>Command</span><b>{codexCommand}</b></div>
         </div>

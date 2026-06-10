@@ -139,6 +139,8 @@ defmodule Symphony.Http.Api do
 
   def workflow(conn), do: json(conn, 200, workflow_metadata())
 
+  def rehearsal_check(conn), do: json(conn, 200, rehearsal_payload(current_config()))
+
   def list_workflow_templates(conn),
     do: json(conn, 200, %{ok: true, templates: Symphony.Workflow.Files.templates()})
 
@@ -396,8 +398,288 @@ defmodule Symphony.Http.Api do
     })
   end
 
+  def rehearsal_payload(config \\ current_config()) do
+    provider_status = Symphony.Orchestration.Providers.status(config)
+    codex_status = Symphony.Codex.Auth.status(config)
+
+    checks = [
+      workflow_rehearsal_check(config),
+      tracker_rehearsal_check(config),
+      provider_rehearsal_check(provider_status),
+      codex_rehearsal_check(provider_status, codex_status),
+      profiles_rehearsal_check(),
+      workspace_rehearsal_check(config)
+    ]
+
+    blockers = check_messages(checks, "blocked")
+    warnings = check_messages(checks, "warning")
+    ready = blockers == [] and warnings == []
+
+    %{
+      ok: true,
+      ready: ready,
+      status:
+        cond do
+          ready -> "ready"
+          blockers != [] -> "blocked"
+          true -> "needs_attention"
+        end,
+      generated_at: DateTime.utc_now(),
+      checks: checks,
+      blockers: blockers,
+      warnings: warnings,
+      workflow: workflow_metadata(config),
+      provider_status: provider_status,
+      codex_auth: Map.take(codex_status, [:state, :auth_phase, :authenticated, :cli_available])
+    }
+  end
+
   def not_found(conn),
     do: json(conn, 404, %{ok: false, error: %{code: "not_found", message: "route not found"}})
+
+  defp workflow_rehearsal_check(config) do
+    path = config.workflow_path
+
+    cond do
+      not is_binary(path) or String.trim(path) == "" ->
+        rehearsal_check_item(
+          "workflow",
+          "Workflow file",
+          "blocked",
+          "No active WORKFLOW.md path is configured."
+        )
+
+      not File.exists?(path) ->
+        rehearsal_check_item(
+          "workflow",
+          "Workflow file",
+          "blocked",
+          "WORKFLOW.md was not found at #{path}."
+        )
+
+      true ->
+        case File.read(path) do
+          {:ok, content} ->
+            {:ok, validation} =
+              Symphony.Workflow.Files.validate(%{"content" => content}, config: config)
+
+            activation_errors = get_in(validation, [:dispatch, :errors]) || []
+
+            cond do
+              validation.valid ->
+                rehearsal_check_item(
+                  "workflow",
+                  "Workflow file",
+                  "pass",
+                  "WORKFLOW.md is structurally valid and activation-ready."
+                )
+
+              validation.errors == [] ->
+                rehearsal_check_item(
+                  "workflow",
+                  "Workflow file",
+                  "blocked",
+                  "WORKFLOW.md is writable but activation is blocked: #{Enum.join(activation_errors, "; ")}",
+                  %{validation: validation}
+                )
+
+              true ->
+                rehearsal_check_item(
+                  "workflow",
+                  "Workflow file",
+                  "blocked",
+                  "WORKFLOW.md has structural errors: #{Enum.join(validation.errors, "; ")}",
+                  %{validation: validation}
+                )
+            end
+
+          {:error, reason} ->
+            rehearsal_check_item(
+              "workflow",
+              "Workflow file",
+              "blocked",
+              "WORKFLOW.md could not be read: #{inspect(reason)}."
+            )
+        end
+    end
+  end
+
+  defp tracker_rehearsal_check(config) do
+    missing =
+      []
+      |> maybe_missing(config.tracker_kind in ["linear"], "Linear tracker kind")
+      |> maybe_missing(present?(config.tracker_api_key), "LINEAR_API_KEY")
+      |> maybe_missing(present?(config.tracker_project_slug), "LINEAR_PROJECT_SLUG")
+
+    if missing == [] do
+      rehearsal_check_item(
+        "tracker",
+        "Tracker credentials",
+        "pass",
+        "Linear tracker credentials resolve from environment."
+      )
+    else
+      rehearsal_check_item(
+        "tracker",
+        "Tracker credentials",
+        "blocked",
+        "Missing #{Enum.join(missing, ", ")}."
+      )
+    end
+  end
+
+  defp provider_rehearsal_check(provider_status) do
+    if provider_status.status == "ready" do
+      rehearsal_check_item(
+        "provider",
+        "Orchestration provider",
+        "pass",
+        "#{provider_label(provider_status.active_provider)} is selected and available."
+      )
+    else
+      rehearsal_check_item(
+        "provider",
+        "Orchestration provider",
+        "blocked",
+        "Provider #{provider_label(provider_status.active_provider)} is #{provider_status.status}."
+      )
+    end
+  end
+
+  defp codex_rehearsal_check(%{active_provider: "direct_codex"}, codex_status) do
+    cond do
+      codex_status.authenticated ->
+        rehearsal_check_item(
+          "codex_auth",
+          "Codex auth",
+          "pass",
+          "Codex CLI is authenticated for Direct Codex workers.",
+          %{auth_phase: codex_status.auth_phase || codex_status.state}
+        )
+
+      codex_status.cli_available ->
+        rehearsal_check_item(
+          "codex_auth",
+          "Codex auth",
+          "blocked",
+          "Codex CLI is installed but auth phase is #{codex_status.auth_phase || codex_status.state}.",
+          %{auth_phase: codex_status.auth_phase || codex_status.state}
+        )
+
+      true ->
+        rehearsal_check_item(
+          "codex_auth",
+          "Codex auth",
+          "blocked",
+          "Codex CLI is not available for Direct Codex workers.",
+          %{auth_phase: codex_status.auth_phase || codex_status.state}
+        )
+    end
+  end
+
+  defp codex_rehearsal_check(_provider_status, codex_status),
+    do:
+      rehearsal_check_item(
+        "codex_auth",
+        "Codex auth",
+        "warning",
+        "Direct Codex is not the active provider; Codex auth phase is #{codex_status.auth_phase || codex_status.state}.",
+        %{auth_phase: codex_status.auth_phase || codex_status.state}
+      )
+
+  defp profiles_rehearsal_check do
+    case Symphony.AgentProfileRegistry.list() do
+      {:ok, profiles} ->
+        enabled = Enum.count(profiles, &(&1["enabled"] == true))
+
+        if enabled > 0 do
+          rehearsal_check_item(
+            "profiles",
+            "Stage profiles",
+            "pass",
+            "#{enabled} enabled stage profiles are available.",
+            %{enabled_count: enabled, count: length(profiles)}
+          )
+        else
+          rehearsal_check_item(
+            "profiles",
+            "Stage profiles",
+            "warning",
+            "No enabled persisted stage profiles are available; reload or save a workflow to ensure defaults.",
+            %{enabled_count: enabled, count: length(profiles)}
+          )
+        end
+
+      {:error, reason} ->
+        rehearsal_check_item(
+          "profiles",
+          "Stage profiles",
+          "blocked",
+          "Stage profile registry is unavailable: #{inspect(reason)}."
+        )
+    end
+  catch
+    :exit, _ ->
+      rehearsal_check_item(
+        "profiles",
+        "Stage profiles",
+        "blocked",
+        "Stage profile registry is not running."
+      )
+  end
+
+  defp workspace_rehearsal_check(config) do
+    root = config.workspace_root
+
+    if present?(root) do
+      case File.mkdir_p(root) do
+        :ok ->
+          rehearsal_check_item(
+            "workspace",
+            "Workspace root",
+            "pass",
+            "Workspace root is writable at #{root}.",
+            %{root: root}
+          )
+
+        {:error, reason} ->
+          rehearsal_check_item(
+            "workspace",
+            "Workspace root",
+            "blocked",
+            "Workspace root is not writable at #{root}: #{inspect(reason)}.",
+            %{root: root}
+          )
+      end
+    else
+      rehearsal_check_item(
+        "workspace",
+        "Workspace root",
+        "blocked",
+        "No workspace root is configured."
+      )
+    end
+  end
+
+  defp rehearsal_check_item(id, label, status, message, data \\ %{}) do
+    %{
+      id: id,
+      label: label,
+      status: status,
+      message: message,
+      data: data
+    }
+  end
+
+  defp check_messages(checks, status) do
+    checks
+    |> Enum.filter(&(&1.status == status))
+    |> Enum.map(& &1.message)
+  end
+
+  defp maybe_missing(missing, true, _label), do: missing
+  defp maybe_missing(missing, false, label), do: [label | missing]
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp error(conn, status, :not_found), do: error(conn, status, "not found")
 

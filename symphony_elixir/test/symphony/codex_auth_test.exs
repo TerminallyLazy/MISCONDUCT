@@ -43,6 +43,7 @@ defmodule Symphony.Codex.AuthTest do
     assert status.authenticated == true
     assert status.state == "authenticated"
     assert status.status == "authenticated"
+    assert status.auth_phase == "authenticated"
     assert status.command == "#{cli} app-server"
     assert status.configured_command == "#{cli} app-server"
     assert status.version == "codex-cli 9.9.9"
@@ -65,6 +66,7 @@ defmodule Symphony.Codex.AuthTest do
     assert status.authenticated == false
     assert status.state == "cli_missing"
     assert status.status == "cli_missing"
+    assert status.auth_phase == "cli_missing"
     assert status.command == command
     assert status.configured_command == command
     assert status.version == nil
@@ -101,11 +103,40 @@ defmodule Symphony.Codex.AuthTest do
     assert {:ok, payload} = Auth.login_start(%Config{codex_command: "#{cli} app-server"})
 
     assert payload.ok
-    assert payload.state == "login_completed_or_pending"
+    assert payload.state == "authenticated"
+    assert payload.auth_phase == "authenticated"
     assert payload.login_command == "#{cli} login --device-auth"
     assert payload.output =~ "[REDACTED_URL]"
     assert File.read!(args_path) == "login --device-auth\n"
     assert payload.status.cli_available == true
+  end
+
+  test "login start reports device authorization phase before auth completes", %{dir: dir} do
+    cli =
+      write_cli!(dir, "codex-login-device-phase", """
+      #!/bin/sh
+      if [ "$1" = "--version" ]; then
+        echo "codex-cli 9.9.9"
+        exit 0
+      fi
+      if [ "$1" = "login" ] && [ "$2" = "--device-auth" ]; then
+        echo "Device auth started at https://example.test/?code=secret"
+        exit 0
+      fi
+      if [ "$1" = "login" ] && [ "$2" = "status" ]; then
+        echo "Not logged in"
+        exit 1
+      fi
+      exit 1
+      """)
+
+    assert {:ok, payload} = Auth.login_start(%Config{codex_command: "#{cli} app-server"})
+
+    assert payload.ok
+    assert payload.state == "device_authorization_started"
+    assert payload.auth_phase == "device_authorization_started"
+    assert payload.status.state == "signed_out"
+    assert payload.output =~ "[REDACTED_URL]"
   end
 
   test "status parses quoted command paths and preserves global codex flags", %{dir: dir} do
@@ -171,7 +202,8 @@ defmodule Symphony.Codex.AuthTest do
     assert {:ok, payload} = Auth.login_start(%Config{codex_command: command})
 
     assert payload.ok
-    assert payload.state == "login_completed_or_pending"
+    assert payload.state == "authenticated"
+    assert payload.auth_phase == "authenticated"
     assert payload.login_command == "'#{cli}' --profile work login --device-auth"
     assert File.read!(args_path) == "--profile work login --device-auth\n"
     refute payload.login_command =~ "app-server"

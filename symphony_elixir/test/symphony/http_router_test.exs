@@ -18,6 +18,14 @@ defmodule Symphony.Http.RouterTest do
     body = Jason.decode!(conn.resp_body)
     assert is_list(body["columns"])
     assert body["counts"]
+
+    conn = conn(:get, "/api/rehearsal") |> Symphony.Http.Router.call([])
+    assert conn.status == 200
+    rehearsal = Jason.decode!(conn.resp_body)
+    assert is_boolean(rehearsal["ready"])
+    assert is_list(rehearsal["checks"])
+    assert Enum.any?(rehearsal["checks"], &(&1["id"] == "workflow"))
+    assert Enum.any?(rehearsal["checks"], &(&1["id"] == "codex_auth"))
   end
 
   test "debug miss, move, actions, and not found routes return json" do
@@ -110,7 +118,14 @@ defmodule Symphony.Http.RouterTest do
     assert conn.status == 200
     generated = Jason.decode!(conn.resp_body)
     assert generated["content"] =~ "# Workflow"
+    assert generated["content"] =~ "Symphony Console default workflow"
+    assert generated["content"] =~ "stage_agents:"
+    assert generated["content"] =~ "provider: codex"
+    refute generated["content"] =~ "TODO:"
     assert generated["review"]["judge"]
+    generated_ids = Enum.map(generated["agent_profiles"], & &1["id"])
+    assert "workflow-builder" in generated_ids
+    assert "workflow-judge" in generated_ids
 
     conn =
       conn(:post, "/api/workflows/validate", Jason.encode!(%{content: generated["content"]}))

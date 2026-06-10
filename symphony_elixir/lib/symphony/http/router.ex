@@ -27,7 +27,12 @@ defmodule Symphony.Http.Router do
   get("/api/events", do: Symphony.Http.Api.events(conn))
   get("/api/events/stream", do: Symphony.Http.Api.event_stream(conn))
   get("/api/orchestration/providers", do: Symphony.Http.Api.orchestration_providers(conn))
-  post("/api/orchestration/providers/select", do: Symphony.Http.Api.select_orchestration_provider(conn))
+
+  post("/api/orchestration/providers/select",
+    do: Symphony.Http.Api.select_orchestration_provider(conn)
+  )
+
+  get("/api/rehearsal", do: Symphony.Http.Api.rehearsal_check(conn))
   get("/api/workflow", do: Symphony.Http.Api.workflow(conn))
   get("/api/workflows", do: Symphony.Http.Api.list_workflows(conn))
   post("/api/workflows", do: Symphony.Http.Api.create_workflow(conn))

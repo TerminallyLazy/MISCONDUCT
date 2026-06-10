@@ -8,10 +8,9 @@ Download packaged builds from GitHub Releases:
 
 https://github.com/TerminallyLazy/misconducting/releases/latest
 
-Current locally built release assets are Linux ARM64:
-
-- `Symphony Console_0.1.10_aarch64.AppImage`
-- `Symphony Console_0.1.10_arm64.deb`
+Current app metadata in this checkout is `0.1.11`. The public latest release page may
+still show older assets until tag `v0.1.11` is pushed and the desktop release workflow
+publishes new artifacts.
 
 The GitHub Actions workflow `.github/workflows/release-desktop.yml` is configured to build macOS, Windows, Linux x86_64, and Linux ARM64 packages from release tags.
 

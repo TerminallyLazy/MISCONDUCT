@@ -53,7 +53,9 @@ defmodule Symphony.Orchestration.ProvidersTest do
 
   test "selecting direct codex sets the runtime provider override" do
     System.put_env("SYMPHONY_ORCHESTRATION_PROVIDER", "agent_zero")
-    assert {:ok, status} = Providers.select("direct_codex", %Config{codex_command: "codex app-server"})
+
+    assert {:ok, status} =
+             Providers.select("direct_codex", %Config{codex_command: "codex app-server"})
 
     assert status.active_provider == "direct_codex"
     assert Application.get_env(:symphony_elixir, :orchestration_provider) == "direct_codex"

@@ -48,7 +48,8 @@ defmodule Symphony.Orchestration.Providers do
         blocked_reason:
           if(agent_zero.configured,
             do: "Agent Zero execution adapter is not implemented yet.",
-            else: "Set SYMPHONY_AGENT_ZERO_URL or SYMPHONY_AGENT_ZERO_COMMAND before enabling Agent Zero."
+            else:
+              "Set SYMPHONY_AGENT_ZERO_URL or SYMPHONY_AGENT_ZERO_COMMAND before enabling Agent Zero."
           ),
         message:
           if(agent_zero.configured,
@@ -70,12 +71,14 @@ defmodule Symphony.Orchestration.Providers do
   end
 
   def select("direct_codex", config), do: select(:direct_codex, config)
+
   def select(:direct_codex, config) do
     Application.put_env(:symphony_elixir, :orchestration_provider, "direct_codex")
     {:ok, status(config)}
   end
 
   def select("agent_zero", config), do: select(:agent_zero, config)
+
   def select(:agent_zero, config) do
     agent_zero = agent_zero_config()
 
