@@ -54,6 +54,8 @@ defmodule Symphony.Http.Router do
   post("/api/workflow/reload", do: Symphony.Http.Api.reload_workflow(conn))
   post("/api/v1/refresh", do: Symphony.Http.Api.refresh(conn))
   post("/api/refresh", do: Symphony.Http.Api.refresh(conn))
+  post("/api/movements", do: Symphony.Http.Api.create_movement(conn))
+  post("/api/issues", do: Symphony.Http.Api.create_movement(conn))
   get("/api/issues/:id/debug", do: Symphony.Http.Api.debug_issue(conn, id))
   post("/api/issues/:id/move", do: Symphony.Http.Api.move_issue(conn, id))
   post("/api/issues/:id/actions/:action", do: Symphony.Http.Api.issue_action(conn, id, action))

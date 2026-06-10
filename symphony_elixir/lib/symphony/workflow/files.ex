@@ -14,7 +14,7 @@ defmodule Symphony.Workflow.Files do
       id: "blank",
       name: "Symphony Default Score",
       description:
-        "Ready-to-edit Symphony Console defaults for Direct Codex, Linear intake, Judge, and Refiner.",
+        "Ready-to-edit Symphony Console defaults for manual Conductor intake, Direct Codex, Judge, and Refiner.",
       tags: ["symphony", "default", "codex"],
       required_context: [],
       variables: ["name", "objective"]
@@ -244,7 +244,7 @@ defmodule Symphony.Workflow.Files do
 
   def generate(attrs, opts \\ []) do
     attrs = stringify(attrs || %{})
-    template_id = attrs["template_id"] || attrs["template"] || "linear_codex_judge_refiner"
+    template_id = attrs["template_id"] || attrs["template"] || "blank"
     overrides = stringify(attrs["overrides"] || attrs["context"] || %{})
 
     with {:ok, content} <- render_template(template_id, overrides),
@@ -367,10 +367,10 @@ defmodule Symphony.Workflow.Files do
       value(
         o,
         "objective",
-        "Coordinate real Linear work through Direct Codex builder, judge, and refiner stages."
+        "Coordinate operator-supplied Symphony movements through Direct Codex builder, judge, and refiner stages."
       )
 
-    profiles = companion_agent_profiles("linear_codex_judge_refiner", o)
+    profiles = companion_agent_profiles("blank", o)
     generator_profile = profile_ref(o, profiles, "generator", "workflow-generator")
     builder_profile = profile_ref(o, profiles, "builder", "workflow-builder")
     judge_profile = profile_ref(o, profiles, "judge", "workflow-judge")
@@ -382,14 +382,11 @@ defmodule Symphony.Workflow.Files do
     name: #{yaml(name)}
     description: Symphony Console default workflow for Direct Codex orchestration.
     tracker:
-      kind: linear
-      endpoint: https://api.linear.app/graphql
-      api_key: $LINEAR_API_KEY
-      project_slug: $LINEAR_PROJECT_SLUG
-      active_states: [Todo, In Progress]
+      kind: none
+      active_states: [Manual, Ready, In Progress]
       terminal_states: [Closed, Cancelled, Canceled, Duplicate, Done]
     polling:
-      interval_ms: 30000
+      interval_ms: 0
     workspace:
       root: ./symphony_workspaces
     hooks:
@@ -409,7 +406,7 @@ defmodule Symphony.Workflow.Files do
     generator:
       provider: codex
       profile: #{yaml(generator_profile)}
-      instructions: Convert real tracker context into a bounded implementation score.
+      instructions: Conduct operator movements into bounded implementation scores.
     builder:
       provider: codex
       profile: #{yaml(builder_profile)}
@@ -425,40 +422,41 @@ defmodule Symphony.Workflow.Files do
       max_attempts: 3
       strategy: fix_judge_findings
     stage_agents:
-    #{stage_agents_yaml("linear_codex_judge_refiner", o)}
+    #{stage_agents_yaml("blank", o)}
     ---
     # Workflow
 
     ## Identity
-    - Project: $LINEAR_PROJECT_SLUG
+    - Project: operator-supplied score
     - Workspace: ./symphony_workspaces
     - Workflow version: 1
-    - Source context: Linear issue payload and repository files visible to the runner.
+    - Source context: manual movement payload and repository files visible to the runner.
 
     ## Objective
     #{objective}
 
     ## Inputs
-    - Real Linear issue identifier: {{ issue.identifier }}
-    - Real Linear issue title: {{ issue.title }}
-    - Real Linear issue state: {{ issue.state }}
+    - Movement identifier: {{ issue.identifier }}
+    - Movement title: {{ issue.title }}
+    - Movement state: {{ issue.state }}
+    - Movement brief: {{ issue.description }}
     - Attempt number: {{ attempt }}
 
     ## Agents
-    - Generator: turns tracker context into scoped execution instructions.
+    - Generator: conducts the operator movement into scoped execution instructions.
     - Builder: runs Direct Codex against the issue workspace.
     - Judge: evaluates changed files, validation output, and issue fit.
     - Refiner: resolves judge findings with bounded retry attempts.
 
     ## Phases
-    - Overture / Intake: poll Linear and claim eligible active issues.
+    - Overture / Conductor Intake: accept an operator movement and claim it for the orchestra.
     - Movement I / Build: perform scoped implementation in the workspace.
     - Movement II / Judge: verify outputs against the rubric.
     - Movement III / Refine: fix judge findings without expanding scope.
     - Finale / Complete: mark work ready only after validation gates pass.
 
     ## Validation Gates
-    - Tracker credentials and project slug resolve from environment variables.
+    - Manual movement title and brief are present before conducting work.
     - Active provider is Direct Codex and the local Codex CLI is authenticated.
     - Stage agent profiles referenced in front matter are enabled.
     - Secrets remain environment references and are never written literally.
@@ -474,11 +472,11 @@ defmodule Symphony.Workflow.Files do
     - Runtime reload is supported from Symphony Console when no active runs are in flight.
 
     ## Guardrails
-    - Do not invent tasks, issue IDs, paths, credentials, commands, or integrations.
+    - Do not invent tasks, paths, credentials, commands, or integrations.
     - Destructive operations require human approval.
 
     ## Escalation
-    - Block and ask the operator when credentials, repository context, or assigned agents are unavailable.
+    - Block and ask the operator when repository context, assigned agents, or required inputs are unavailable.
 
     ## Change Log
     - Initial Symphony Console default workflow generated by Symphony.
@@ -639,9 +637,11 @@ defmodule Symphony.Workflow.Files do
     name: #{yaml(name)}
     description: Repository-grounded multi-agent workflow scaffold.
     tracker:
-      kind: linear
-      api_key: $LINEAR_API_KEY
-      project_slug: $LINEAR_PROJECT_SLUG
+      kind: none
+      active_states: [Manual, Ready, In Progress]
+      terminal_states: [Closed, Cancelled, Canceled, Duplicate, Done]
+    polling:
+      interval_ms: 0
     workspace:
       root: ./symphony_workspaces
     agent:
@@ -768,6 +768,84 @@ defmodule Symphony.Workflow.Files do
   end
 
   defp profile_from_stage_agent(_), do: nil
+
+  defp base_companion_profiles("blank") do
+    [
+      %{
+        "id" => "workflow-generator",
+        "name" => "Workflow Conductor",
+        "role" => "Generator",
+        "profile_key" => "workflow-generator",
+        "section" => "Woodwinds",
+        "instrument_name" => "Clarinet",
+        "description" => "Opens the score by turning operator movements into bounded plans.",
+        "instructions" =>
+          "Conduct manual movement context and repository facts into scoped implementation plans.",
+        "capabilities" => ["workflow-generation", "planning", "manual-intake"],
+        "music" => %{
+          "motif" => "Overture / Conductor Intake",
+          "dynamic" => "mezzo-piano",
+          "register" => "middle"
+        },
+        "stage_position" => %{"section" => "woodwinds", "seat" => "front-left"}
+      },
+      %{
+        "id" => "workflow-builder",
+        "name" => "Codex Builder",
+        "role" => "Builder",
+        "profile_key" => "workflow-builder",
+        "section" => "Strings",
+        "instrument_name" => "Violin",
+        "description" => "Carries the implementation line through the active Codex workspace.",
+        "instructions" => "Run Codex against real movement workspaces and keep changes scoped.",
+        "capabilities" => ["implementation", "codex", "repository-work"],
+        "music" => %{
+          "motif" => "Movement I / Build",
+          "dynamic" => "mezzo-forte",
+          "register" => "upper-middle"
+        },
+        "stage_position" => %{"section" => "strings", "seat" => "front-center"}
+      },
+      %{
+        "id" => "workflow-judge",
+        "name" => "Workflow Judge",
+        "role" => "Judge",
+        "profile_key" => "workflow-judge",
+        "section" => "Piano",
+        "instrument_name" => "Piano",
+        "description" =>
+          "Evaluates completed movements against quality, safety, and scope gates.",
+        "instructions" =>
+          "Judge work against tests, movement fit, changed-file scope, and secret-safety constraints.",
+        "capabilities" => ["review", "quality-gates", "safety"],
+        "music" => %{
+          "motif" => "Movement II / Judge",
+          "dynamic" => "mezzo-piano",
+          "register" => "middle"
+        },
+        "stage_position" => %{"section" => "piano", "seat" => "center-right"}
+      },
+      %{
+        "id" => "workflow-refiner",
+        "name" => "Workflow Refiner",
+        "role" => "Refiner",
+        "profile_key" => "workflow-refiner",
+        "section" => "Brass",
+        "instrument_name" => "French Horn",
+        "description" =>
+          "Resolves judge findings with bounded, evidence-based correction passes.",
+        "instructions" =>
+          "Fix judge findings without inventing facts or expanding the task scope.",
+        "capabilities" => ["refinement", "review-fixes", "bounded-retry"],
+        "music" => %{
+          "motif" => "Movement III / Refine",
+          "dynamic" => "mezzo-forte",
+          "register" => "lower-middle"
+        },
+        "stage_position" => %{"section" => "brass", "seat" => "back-right"}
+      }
+    ]
+  end
 
   defp base_companion_profiles(template_id), do: Map.get(@companion_profiles, template_id, [])
 

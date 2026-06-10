@@ -96,10 +96,10 @@ defmodule Symphony.Orchestrator do
     publish_event(state, "tracker.poll.requested", %{
       stage: "intake",
       status: "queued",
-      message: "Poll requested."
+      message: "Intake cue requested."
     })
 
-    {:noreply, poll_linear(state)}
+    {:noreply, run_intake(state)}
   end
 
   @impl true
@@ -107,10 +107,10 @@ defmodule Symphony.Orchestrator do
     publish_event(state, "tracker.poll.scheduled", %{
       stage: "intake",
       status: "queued",
-      message: "Scheduled poll started."
+      message: "Scheduled intake started."
     })
 
-    {:noreply, state |> poll_linear() |> schedule_poll()}
+    {:noreply, state |> run_intake() |> schedule_poll()}
   end
 
   @impl true
@@ -177,20 +177,43 @@ defmodule Symphony.Orchestrator do
     if id, do: {:noreply, finish(state, id, reason)}, else: {:noreply, state}
   end
 
+  defp run_intake(state) do
+    case Symphony.Config.tracker_kind(state.config) do
+      "linear" ->
+        poll_linear(state)
+
+      kind when kind in ["none", "manual", "local"] ->
+        skip_tracker_poll(state, kind)
+
+      kind ->
+        skip_tracker_poll(state, kind, {:unsupported_tracker_kind, kind})
+    end
+  end
+
   defp poll_linear(state) do
     now = DateTime.utc_now()
     client = Application.get_env(:symphony_elixir, :linear_client, Symphony.Linear.GraphQLClient)
 
-    publish_event(state, "tracker.poll.started", %{
-      stage: "intake",
-      status: "running",
-      message: "Fetching candidate issues.",
-      data: %{
-        tracker_kind: state.config.tracker_kind,
-        project_slug: state.config.tracker_project_slug
-      }
-    })
+    case Symphony.Config.tracker_poll_errors(state.config) do
+      [] ->
+        publish_event(state, "tracker.poll.started", %{
+          stage: "intake",
+          status: "running",
+          message: "Fetching candidate issues.",
+          data: %{
+            tracker_kind: state.config.tracker_kind,
+            project_slug: state.config.tracker_project_slug
+          }
+        })
 
+        fetch_tracker_candidates(client, state, now)
+
+      errors ->
+        skip_tracker_poll(state, "linear", errors)
+    end
+  end
+
+  defp fetch_tracker_candidates(client, state, now) do
     case client.fetch_candidate_issues(state.config) do
       {:ok, issues} ->
         {state, accepted} =
@@ -223,6 +246,38 @@ defmodule Symphony.Orchestrator do
         %{state | last_poll_at: now, last_poll_count: 0, last_poll_error: inspect(reason)}
     end
   end
+
+  defp skip_tracker_poll(state, kind, reason \\ nil) do
+    now = DateTime.utc_now()
+    message = tracker_skip_message(kind, reason)
+
+    publish_event(state, "tracker.poll.skipped", %{
+      stage: "intake",
+      status: "skipped",
+      message: message,
+      data: %{
+        tracker_kind: kind,
+        reason: tracker_skip_reason(reason),
+        manual_intake_available: true
+      }
+    })
+
+    %{state | last_poll_at: now, last_poll_count: 0, last_poll_error: nil}
+  end
+
+  defp tracker_skip_message(kind, nil) when kind in ["none", "manual", "local"],
+    do: "No external tracker is required; waiting for a conductor movement."
+
+  defp tracker_skip_message("linear", reasons) when is_list(reasons),
+    do:
+      "Linear intake is not configured (#{Enum.map_join(reasons, ", ", &inspect/1)}); manual movements remain available."
+
+  defp tracker_skip_message(kind, reason),
+    do: "Tracker #{kind} intake skipped: #{inspect(reason)}"
+
+  defp tracker_skip_reason(nil), do: nil
+  defp tracker_skip_reason(reasons) when is_list(reasons), do: Enum.map(reasons, &inspect/1)
+  defp tracker_skip_reason(reason), do: inspect(reason)
 
   defp schedule_poll(%{poll_interval_ms: ms} = state) when is_integer(ms) and ms > 0 do
     if state.poll_timer_ref, do: Process.cancel_timer(state.poll_timer_ref)
@@ -601,8 +656,8 @@ defmodule Symphony.Orchestrator do
     }
   end
 
-  defp blank_prompt(""), do: "You are working on an issue from Linear."
-  defp blank_prompt(nil), do: "You are working on an issue from Linear."
+  defp blank_prompt(""), do: "You are working on a Symphony movement."
+  defp blank_prompt(nil), do: "You are working on a Symphony movement."
   defp blank_prompt(p), do: p
 
   defp start_followup_phase(state, id, phase, context \\ %{}) do

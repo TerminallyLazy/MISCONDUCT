@@ -2,6 +2,7 @@ defmodule Symphony.Http.Api do
   import Plug.Conn
 
   alias Symphony.Http.Json
+  alias Symphony.Linear.Issue
 
   def json(conn, status, data) do
     conn |> put_resp_content_type("application/json") |> send_resp(status, Json.encode!(data))
@@ -326,7 +327,7 @@ defmodule Symphony.Http.Api do
       type: "operator.refresh.requested",
       source: "http_api",
       action: "refresh",
-      message: "Operator requested a Linear poll."
+      message: "Operator requested an intake cue."
     })
 
     Symphony.Orchestrator.refresh()
@@ -335,8 +336,51 @@ defmodule Symphony.Http.Api do
       queued: true,
       coalesced: false,
       requested_at: DateTime.utc_now(),
-      operations: ["poll", "reconcile"]
+      operations: ["intake", "reconcile"]
     })
+  end
+
+  def create_movement(conn) do
+    params = conn.body_params || %{}
+    issue = manual_movement_issue(params)
+
+    Symphony.Events.publish(%{
+      type: "score.movement.accepted",
+      source: "http_api",
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      stage: "intake",
+      status: "queued",
+      message: "Conductor accepted a manual movement.",
+      data: %{
+        title: issue.title,
+        state: issue.state,
+        labels: issue.labels,
+        tracker_kind: "manual"
+      }
+    })
+
+    case Symphony.Orchestrator.enqueue_issue(issue) do
+      {:ok, run} ->
+        json(conn, 202, %{
+          ok: true,
+          accepted: true,
+          movement: manual_issue_json(issue),
+          run: run_card(run),
+          message: "Movement queued for Symphony orchestration."
+        })
+
+      {:error, reason} ->
+        json(conn, 409, %{
+          ok: false,
+          accepted: false,
+          movement: manual_issue_json(issue),
+          error: %{
+            code: inspect(reason),
+            message: "Movement could not be queued: #{inspect(reason)}"
+          }
+        })
+    end
   end
 
   def debug_issue(conn, id) do
@@ -505,26 +549,48 @@ defmodule Symphony.Http.Api do
   end
 
   defp tracker_rehearsal_check(config) do
-    missing =
-      []
-      |> maybe_missing(config.tracker_kind in ["linear"], "Linear tracker kind")
-      |> maybe_missing(present?(config.tracker_api_key), "LINEAR_API_KEY")
-      |> maybe_missing(present?(config.tracker_project_slug), "LINEAR_PROJECT_SLUG")
+    case Symphony.Config.tracker_kind(config) do
+      kind when kind in ["none", "manual", "local"] ->
+        rehearsal_check_item(
+          "tracker",
+          "Intake source",
+          "pass",
+          "Manual score intake is active; Linear is optional.",
+          %{tracker_kind: kind, manual_intake_available: true}
+        )
 
-    if missing == [] do
-      rehearsal_check_item(
-        "tracker",
-        "Tracker credentials",
-        "pass",
-        "Linear tracker credentials resolve from environment."
-      )
-    else
-      rehearsal_check_item(
-        "tracker",
-        "Tracker credentials",
-        "blocked",
-        "Missing #{Enum.join(missing, ", ")}."
-      )
+      "linear" ->
+        missing =
+          []
+          |> maybe_missing(present?(config.tracker_api_key), "LINEAR_API_KEY")
+          |> maybe_missing(present?(config.tracker_project_slug), "LINEAR_PROJECT_SLUG")
+
+        if missing == [] do
+          rehearsal_check_item(
+            "tracker",
+            "Intake source",
+            "pass",
+            "Linear intake credentials resolve from environment.",
+            %{tracker_kind: "linear", manual_intake_available: true}
+          )
+        else
+          rehearsal_check_item(
+            "tracker",
+            "Intake source",
+            "warning",
+            "Linear intake is unavailable; manual movements can still be conducted. Missing #{Enum.join(missing, ", ")}.",
+            %{tracker_kind: "linear", missing: missing, manual_intake_available: true}
+          )
+        end
+
+      other ->
+        rehearsal_check_item(
+          "tracker",
+          "Intake source",
+          "warning",
+          "Tracker #{other} is not supported; manual movements can still be conducted.",
+          %{tracker_kind: other, manual_intake_available: true}
+        )
     end
   end
 
@@ -779,8 +845,8 @@ defmodule Symphony.Http.Api do
         "healthy"
 
       {:error, errors} when is_list(errors) ->
-        if Enum.any?(errors, &(&1 == :missing_tracker_api_key)),
-          do: "degraded_missing_credentials",
+        if Enum.any?(errors, &match?({:unsupported_tracker_kind, _}, &1)),
+          do: "degraded_tracker",
           else: "degraded_config"
 
       _ ->
@@ -802,7 +868,10 @@ defmodule Symphony.Http.Api do
         project_slug: c.tracker_project_slug,
         active_states: c.active_states,
         terminal_states: c.terminal_states,
-        has_api_key: is_binary(c.tracker_api_key) and String.trim(c.tracker_api_key) != ""
+        has_api_key: is_binary(c.tracker_api_key) and String.trim(c.tracker_api_key) != "",
+        poll_ready: Symphony.Config.tracker_poll_ready?(c),
+        poll_errors: Enum.map(Symphony.Config.tracker_poll_errors(c), &inspect/1),
+        manual_intake_available: true
       },
       polling: %{interval_ms: c.poll_interval_ms},
       agent: %{
@@ -951,9 +1020,112 @@ defmodule Symphony.Http.Api do
     end
   end
 
+  defp manual_movement_issue(params) do
+    now = DateTime.utc_now()
+
+    title =
+      string_param(params, "title") || string_param(params, "objective") ||
+        "Manual Symphony movement"
+
+    identifier = manual_identifier(params, title)
+    description = string_param(params, "description") || string_param(params, "objective") || ""
+
+    %Issue{
+      id: string_param(params, "id") || "manual:#{identifier}",
+      identifier: identifier,
+      title: title,
+      description: description,
+      state: string_param(params, "state") || "Manual",
+      priority: string_param(params, "priority"),
+      labels: Enum.uniq(["manual", "symphony"] ++ list_param(params, "labels")),
+      created_at: now,
+      updated_at: now
+    }
+  end
+
+  defp manual_identifier(params, title) do
+    requested = string_param(params, "identifier") || string_param(params, "key")
+    fallback = "MOV-#{System.unique_integer([:positive])}"
+
+    (requested || fallback)
+    |> sanitize_identifier()
+    |> case do
+      "" ->
+        title
+        |> sanitize_identifier()
+        |> String.slice(0, 32)
+        |> case do
+          "" -> fallback
+          slug -> "MOV-#{slug}"
+        end
+
+      identifier ->
+        identifier
+    end
+  end
+
+  defp sanitize_identifier(value) do
+    value
+    |> to_string()
+    |> String.trim()
+    |> String.upcase()
+    |> String.replace(~r/[^A-Z0-9._-]+/, "-")
+    |> String.trim("-")
+  end
+
+  defp manual_issue_json(issue) do
+    %{
+      id: issue.id,
+      identifier: issue.identifier,
+      title: issue.title,
+      description: issue.description,
+      state: issue.state,
+      priority: issue.priority,
+      labels: issue.labels,
+      created_at: issue.created_at,
+      updated_at: issue.updated_at
+    }
+  end
+
+  defp string_param(params, key) do
+    case param_value(params, key) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: nil, else: value
+
+      value when is_integer(value) or is_float(value) ->
+        to_string(value)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp list_param(params, key) do
+    case param_value(params, key) do
+      values when is_list(values) ->
+        values
+        |> Enum.map(&to_string/1)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+
+      value when is_binary(value) ->
+        value
+        |> String.split(",", trim: true)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+
+      _ ->
+        []
+    end
+  end
+
+  defp param_value(params, key),
+    do: Map.get(params, key) || Map.get(params, String.to_atom(key))
+
   defp body_value(conn, key) do
     params = conn.body_params || %{}
-    Map.get(params, key) || Map.get(params, String.to_atom(key))
+    param_value(params, key)
   end
 
   defp provider_label("agent_zero"), do: "Agent Zero"

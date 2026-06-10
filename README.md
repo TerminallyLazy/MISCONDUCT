@@ -1,6 +1,6 @@
 # Misconducting / Symphony Console
 
-A pixel-art orchestral conductor console for coordinating real Linear issues, Codex-backed agents, workflow files, agent profiles, and live task state.
+A pixel-art orchestral conductor console for coordinating manual Symphony movements, optional Linear issues, Codex-backed agents, workflow files, agent profiles, and live task state.
 
 ## Desktop downloads
 
@@ -8,8 +8,8 @@ Download packaged builds from GitHub Releases:
 
 https://github.com/TerminallyLazy/misconducting/releases/latest
 
-Current app metadata in this checkout is `0.1.11`. The public latest release page may
-still show older assets until tag `v0.1.11` is pushed and the desktop release workflow
+Current app metadata in this checkout is `0.1.12`. The public latest release page may
+still show older assets until tag `v0.1.12` is pushed and the desktop release workflow
 publishes new artifacts.
 
 The GitHub Actions workflow `.github/workflows/release-desktop.yml` is configured to build macOS, Windows, Linux x86_64, and Linux ARM64 packages from release tags.

@@ -243,6 +243,11 @@ type Card = {
   source: 'live';
   raw?: unknown;
 };
+type ManualMovementPayload = {
+  title: string;
+  description?: string;
+  identifier?: string;
+};
 
 const columns = ['Ready', 'In Progress', 'Human Review', 'Retry', 'Blocked', 'Done'];
 const orchestraSections = ['Strings', 'Woodwinds', 'Brass', 'Percussion', 'Piano', 'Bells'];
@@ -1138,9 +1143,12 @@ function App() {
 
     if (
       [
+        'score.movement.accepted',
+        'tracker.poll.skipped',
         'tracker.poll.completed',
         'issue.stage.started',
         'issue.stage.blocked',
+        'issue.dispatch.blocked',
         'issue.execution.completed',
         'issue.execution.failed',
         'issue.retry.scheduled',
@@ -1155,6 +1163,14 @@ function App() {
   const refresh = useMutation({
     mutationFn: () => api(base, '/api/v1/refresh', { method: 'POST', body: '{}' }),
     onSuccess: invalidateLiveData
+  });
+  const createMovement = useMutation({
+    mutationFn: (payload: ManualMovementPayload) =>
+      api<Record<string, unknown>>(base, '/api/movements', { method: 'POST', body: JSON.stringify(payload) }, 12_000),
+    onSuccess: () => {
+      invalidateLiveData();
+      queryClient.invalidateQueries({ queryKey: ['rehearsalCheck', base] });
+    }
   });
   const debugIssue = useMutation({
     mutationFn: (id: string) => api(base, `/api/issues/${encodeURIComponent(id)}/debug`),
@@ -1283,7 +1299,7 @@ function App() {
 
   const apiStarting = apiMode === 'initializing';
   const apiStartupFailed = apiMode === 'desktop-error';
-  const actionBusy = !apiReady || refresh.isPending || debugIssue.isPending || moveIssue.isPending || issueAction.isPending || saveAgentProfile.isPending || deleteAgentProfile.isPending || startCodexLogin.isPending || checkCodexAuth.isPending || logoutCodex.isPending || selectProvider.isPending || startBundledBackend.isPending || restartBundledBackend.isPending;
+  const actionBusy = !apiReady || refresh.isPending || createMovement.isPending || debugIssue.isPending || moveIssue.isPending || issueAction.isPending || saveAgentProfile.isPending || deleteAgentProfile.isPending || startCodexLogin.isPending || checkCodexAuth.isPending || logoutCodex.isPending || selectProvider.isPending || startBundledBackend.isPending || restartBundledBackend.isPending;
 
   return (
     <div className="concertShell">
@@ -1353,6 +1369,9 @@ function App() {
               onMove={(id, target) => moveIssue.mutate({ id, target })}
               orchestraAudio={orchestraAudio}
               onAction={(id, action) => issueAction.mutate({ id, action })}
+              onCreateMovement={payload => createMovement.mutateAsync(payload)}
+              movementBusy={createMovement.isPending}
+              movementError={createMovement.error instanceof Error ? createMovement.error.message : undefined}
             />
           )}
           {tab === 'agents' && (
@@ -1490,7 +1509,7 @@ function ConcertHeader({
       <div>
         <p className="eyebrow">Live score for autonomous work</p>
         <h1>Conductor View</h1>
-        <p className="subtle">{apiStarting ? 'Starting the bundled desktop backend' : offline ? 'The pit is quiet until the backend returns' : reconnecting ? 'Holding the last live score while the backend reconnects' : 'Real Linear issues conducted by Codex agents'} · musicians, movements, and generated score</p>
+        <p className="subtle">{apiStarting ? 'Starting the bundled desktop backend' : offline ? 'The pit is quiet until the backend returns' : reconnecting ? 'Holding the last live score while the backend reconnects' : 'Operator movements and optional tracker issues conducted by Codex agents'} · musicians, movements, and generated score</p>
       </div>
       <div className="actions">
         <span className={`pill eventPill ${eventLive ? 'active' : eventReconnecting ? 'warning' : 'neutral'}`} title={lastEvent?.message || 'Provider-neutral orchestration event stream'}>
@@ -1506,7 +1525,7 @@ function ConcertHeader({
           {audioEnabled ? <PauseCircle size={16} /> : <Volume2 size={16} />}
           {audioEnabled ? 'Mute Music' : 'Enable Music'}
         </button>
-        <button className="button primary" onClick={onRefresh} disabled={busy}><RefreshCw size={16} />Cue Linear Poll</button>
+        <button className="button primary" onClick={onRefresh} disabled={busy}><RefreshCw size={16} />Cue Intake</button>
       </div>
     </header>
   );
@@ -1677,7 +1696,10 @@ function OrchestraFloor({
   onDebug,
   onMove,
   orchestraAudio,
-  onAction
+  onAction,
+  onCreateMovement,
+  movementBusy,
+  movementError
 }: {
   cards: Card[];
   selectedCard?: Card;
@@ -1690,6 +1712,9 @@ function OrchestraFloor({
   onMove: (id: string, target: string) => void;
   orchestraAudio: OrchestraAudioState;
   onAction: (id: string, action: string) => void;
+  onCreateMovement: (payload: ManualMovementPayload) => Promise<unknown>;
+  movementBusy: boolean;
+  movementError?: string;
 }) {
   const counts = Object.fromEntries(
     renderedStations.map(station => [
@@ -1758,6 +1783,9 @@ function OrchestraFloor({
         onDebug={onDebug}
         onMove={onMove}
         onAction={onAction}
+        onCreateMovement={onCreateMovement}
+        movementBusy={movementBusy}
+        movementError={movementError}
       />
     </div>
   );
@@ -1821,7 +1849,7 @@ function EmptyHouse() {
     <div className="emptyHouse">
       <Sparkles size={22} />
       <b>No active score</b>
-      <span>Create/move Linear issues into active states, then cue a poll.</span>
+      <span>Cue a manual movement or connect an optional tracker.</span>
     </div>
   );
 }
@@ -1915,7 +1943,10 @@ function ScoreConsole({
   busy,
   onDebug,
   onMove,
-  onAction
+  onAction,
+  onCreateMovement,
+  movementBusy,
+  movementError
 }: {
   selectedCard?: Card;
   debugPayload: string | null;
@@ -1923,6 +1954,9 @@ function ScoreConsole({
   onDebug: (id: string) => void;
   onMove: (id: string, target: string) => void;
   onAction: (id: string, action: string) => void;
+  onCreateMovement: (payload: ManualMovementPayload) => Promise<unknown>;
+  movementBusy: boolean;
+  movementError?: string;
 }) {
   const [scoreTab, setScoreTab] = useState<'score' | 'events' | 'tools'>('score');
   return (
@@ -1932,6 +1966,7 @@ function ScoreConsole({
           <button key={tab} className={scoreTab === tab ? 'scoreTabButton active' : 'scoreTabButton'} onClick={() => setScoreTab(tab)}>{tab.toUpperCase()}</button>
         ))}
       </div>
+      <ManualMovementComposer busy={busy || movementBusy} error={movementError} onCreateMovement={onCreateMovement} />
       {selectedCard ? (
         <div className="selectedScore">
           <p className="eyebrow">{selectedCard.movement}</p>
@@ -1943,10 +1978,55 @@ function ScoreConsole({
           {scoreTab === 'tools' && <MovementTools card={selectedCard} busy={busy} onDebug={onDebug} onMove={onMove} onAction={onAction} />}
         </div>
       ) : (
-        <div className="selectedScore empty"><h2>No movement selected</h2><p>The orchestra is waiting for real Linear work.</p></div>
+        <div className="selectedScore empty"><h2>No movement selected</h2><p>The orchestra is waiting for a movement.</p></div>
       )}
       {debugPayload && scoreTab !== 'events' && <pre className="debugPanel">{debugPayload}</pre>}
     </aside>
+  );
+}
+
+function ManualMovementComposer({ busy, error, onCreateMovement }: { busy: boolean; error?: string; onCreateMovement: (payload: ManualMovementPayload) => Promise<unknown> }) {
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [localError, setLocalError] = useState<string | null>(null);
+  const ready = title.trim().length > 0;
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!ready) {
+      setLocalError('Title is required.');
+      return;
+    }
+
+    try {
+      setLocalError(null);
+      await onCreateMovement({
+        title: title.trim(),
+        description: description.trim()
+      });
+      setTitle('');
+      setDescription('');
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <form className="movementComposer" onSubmit={submit}>
+      <div className="movementComposerHeader">
+        <p className="eyebrow">Conductor intake</p>
+        <button className="button primary compact" disabled={busy || !ready} type="submit"><PlayCircle size={14} />Conduct</button>
+      </div>
+      <label>
+        Movement title
+        <input value={title} onChange={event => setTitle(event.target.value)} placeholder="Add a ready-to-conduct score" />
+      </label>
+      <label>
+        Score brief
+        <textarea value={description} onChange={event => setDescription(event.target.value)} placeholder="Objective, constraints, repository context" />
+      </label>
+      {(localError || error) && <p className="formError">{localError || error}</p>}
+    </form>
   );
 }
 
@@ -2229,7 +2309,7 @@ function WorkflowPanel({
 }) {
   const templatesQuery = useWorkflowTemplates(base, enabled);
   const filesQuery = useWorkflowFiles(base, enabled);
-  const [templateId, setTemplateId] = useState('linear_codex_judge_refiner');
+  const [templateId, setTemplateId] = useState('blank');
   const [targetPath, setTargetPath] = useState('generated-workflow/WORKFLOW.md');
   const [overwrite, setOverwrite] = useState(false);
   const [name, setName] = useState('symphony-orchestra-workflow');

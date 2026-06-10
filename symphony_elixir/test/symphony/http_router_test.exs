@@ -1,3 +1,17 @@
+defmodule Symphony.HttpRouterTestRunner do
+  @behaviour Symphony.AgentRunner
+
+  def run(run, _workspace, _config, orchestrator) do
+    send(orchestrator, {
+      :agent_event,
+      run.issue_id,
+      %{event: "session_started", message: "router test movement accepted"}
+    })
+
+    :ok
+  end
+end
+
 defmodule Symphony.Http.RouterTest do
   use ExUnit.Case, async: false
 
@@ -47,6 +61,41 @@ defmodule Symphony.Http.RouterTest do
     conn = conn(:get, "/missing") |> Symphony.Http.Router.call([])
     assert conn.status == 404
     assert Jason.decode!(conn.resp_body)["error"]["code"] == "not_found"
+  end
+
+  test "manual movement API dispatches without Linear credentials" do
+    old_runner = Application.get_env(:symphony_elixir, :agent_runner)
+    old_key = System.get_env("LINEAR_API_KEY")
+    old_project = System.get_env("LINEAR_PROJECT_SLUG")
+
+    on_exit(fn ->
+      restore_app_env(:agent_runner, old_runner)
+      restore_env("LINEAR_API_KEY", old_key)
+      restore_env("LINEAR_PROJECT_SLUG", old_project)
+    end)
+
+    Application.put_env(:symphony_elixir, :agent_runner, Symphony.HttpRouterTestRunner)
+    System.delete_env("LINEAR_API_KEY")
+    System.delete_env("LINEAR_PROJECT_SLUG")
+
+    conn =
+      conn(
+        :post,
+        "/api/movements",
+        Jason.encode!(%{
+          title: "Rehearse optional tracker workflow",
+          description: "Prove a movement can be queued without Linear."
+        })
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 202
+    body = Jason.decode!(conn.resp_body)
+    assert body["accepted"] == true
+    assert body["movement"]["identifier"] =~ "MOV-"
+    assert body["movement"]["labels"] == ["manual", "symphony"]
+    assert body["run"]["title"] == "Rehearse optional tracker workflow"
   end
 
   test "agent profile API creates, lists, updates, and deletes profiles" do
@@ -142,8 +191,10 @@ defmodule Symphony.Http.RouterTest do
 
     assert conn.status == 200
 
-    assert Jason.decode!(conn.resp_body)["preview"]["frontmatter"]["tracker"]["api_key"] ==
-             "$LINEAR_API_KEY"
+    tracker = Jason.decode!(conn.resp_body)["preview"]["frontmatter"]["tracker"]
+    assert tracker["kind"] == "none"
+    refute Map.has_key?(tracker, "api_key")
+    assert generated["content"] =~ "Overture / Conductor Intake"
 
     path_root = "tmp-router-workflow-#{System.unique_integer([:positive])}"
     moved_path_root = "tmp-router-workflow-moved-#{System.unique_integer([:positive])}"
@@ -554,4 +605,9 @@ defmodule Symphony.Http.RouterTest do
     assert get_in(body, ["metadata", "has_judge"]) == false
     assert get_in(body, ["metadata", "has_refiner"]) == false
   end
+
+  defp restore_env(key, nil), do: System.delete_env(key)
+  defp restore_env(key, value), do: System.put_env(key, value)
+  defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 end

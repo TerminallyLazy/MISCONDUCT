@@ -44,7 +44,7 @@ defmodule SymphonyElixir.Application do
         content
 
       {:error, _reason} ->
-        "---\ntracker:\n  kind: linear\n  api_key: $LINEAR_API_KEY\n  project_slug: $LINEAR_PROJECT_SLUG\nworkspace:\n  root: ./symphony_workspaces\nserver:\n  port: 4004\n---\nYou are working on Linear issue {{ issue.identifier }}: {{ issue.title }}. Attempt: {{ attempt }}.\n"
+        "---\ntracker:\n  kind: none\nworkspace:\n  root: ./symphony_workspaces\nserver:\n  port: 4004\n---\nYou are working on Symphony movement {{ issue.identifier }}: {{ issue.title }}. Attempt: {{ attempt }}.\n"
     end
   end
 end

@@ -48,15 +48,17 @@ defmodule Symphony.Config do
     ag = getv(cfg, "agent", %{})
     cx = getv(cfg, "codex", %{})
     sv = getv(cfg, "server", %{})
+    tracker_kind = tracker_kind(getv(tr, "kind", nil))
+    default_api_key = if tracker_kind == "linear", do: "$LINEAR_API_KEY", else: nil
 
     {:ok,
      %__MODULE__{
        workflow_path: Path.expand(path),
        workflow_dir: dir,
        workflow: wf,
-       tracker_kind: getv(tr, "kind", nil),
+       tracker_kind: tracker_kind,
        tracker_endpoint: getv(tr, "endpoint", "https://api.linear.app/graphql"),
-       tracker_api_key: resolve_env(getv(tr, "api_key", "$LINEAR_API_KEY")),
+       tracker_api_key: resolve_env(getv(tr, "api_key", default_api_key)),
        tracker_project_slug: resolve_env(getv(tr, "project_slug", nil)),
        active_states: list_or(getv(tr, "active_states", nil), ["Todo", "In Progress"]),
        terminal_states:
@@ -96,16 +98,59 @@ defmodule Symphony.Config do
   end
 
   def validate_dispatch(c) do
+    tracker_kind = tracker_kind(c)
+
     []
-    |> maybe_error(c.tracker_kind in ["linear"], {:unsupported_tracker_kind, c.tracker_kind})
-    |> maybe_error(present?(c.tracker_api_key), :missing_tracker_api_key)
-    |> maybe_error(present?(c.tracker_project_slug), :missing_tracker_project_slug)
+    |> maybe_error(
+      tracker_kind in ["none", "manual", "local", "linear"],
+      {:unsupported_tracker_kind, c.tracker_kind}
+    )
     |> maybe_error(present?(c.codex_command), :missing_codex_command)
     |> case do
       [] -> :ok
       errs -> {:error, Enum.reverse(errs)}
     end
   end
+
+  def tracker_kind(%__MODULE__{tracker_kind: kind}), do: tracker_kind(kind)
+  def tracker_kind(nil), do: "none"
+
+  def tracker_kind(kind) do
+    case kind |> to_string() |> String.trim() |> String.downcase() do
+      "" -> "none"
+      "off" -> "none"
+      "disabled" -> "none"
+      "score" -> "manual"
+      "manual" -> "manual"
+      "local" -> "local"
+      "linear" -> "linear"
+      other -> other
+    end
+  end
+
+  def tracker_poll_errors(c) do
+    case tracker_kind(c) do
+      "linear" ->
+        []
+        |> maybe_error(present?(c.tracker_api_key), :missing_tracker_api_key)
+        |> maybe_error(present?(c.tracker_project_slug), :missing_tracker_project_slug)
+        |> Enum.reverse()
+
+      "none" ->
+        [:tracker_disabled]
+
+      "manual" ->
+        [:manual_intake]
+
+      "local" ->
+        [:manual_intake]
+
+      other ->
+        [{:unsupported_tracker_kind, other}]
+    end
+  end
+
+  def tracker_poll_ready?(c), do: tracker_poll_errors(c) == []
 
   def active_state?(c, s), do: norm(s) in Enum.map(c.active_states, &norm/1)
   def terminal_state?(c, s), do: norm(s) in Enum.map(c.terminal_states, &norm/1)
