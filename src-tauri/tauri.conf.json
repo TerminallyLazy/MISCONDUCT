@@ -1,6 +1,6 @@
 {
   "productName": "Symphony Console",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "identifier": "dev.symphony.console",
   "build": {
     "beforeDevCommand": "npm run dev",

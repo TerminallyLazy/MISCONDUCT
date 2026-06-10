@@ -3243,7 +3243,7 @@ dependencies = [
 
 [[package]]
 name = "symphony_desktop"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "flate2",
  "serde",

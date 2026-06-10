@@ -5,6 +5,7 @@ defmodule Symphony.Orchestrator.State do
             claimed: MapSet.new(),
             retry_attempts: %{},
             completed: MapSet.new(),
+            completed_runs: %{},
             codex_totals: %{
               input_tokens: 0,
               output_tokens: 0,

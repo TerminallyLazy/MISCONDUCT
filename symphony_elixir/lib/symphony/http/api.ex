@@ -56,7 +56,12 @@ defmodule Symphony.Http.Api do
           count: length(snap.retrying),
           cards: Enum.map(snap.retrying, &retry_card/1)
         },
-        %{id: "completed", title: "Completed", count: snap.counts.completed, cards: []}
+        %{
+          id: "completed",
+          title: "Completed",
+          count: snap.counts.completed,
+          cards: Enum.map(Map.get(snap, :completed_runs, []), &completed_card/1)
+        }
       ],
       counts: snap.counts,
       codex_totals: snap.codex_totals,
@@ -968,6 +973,17 @@ defmodule Symphony.Http.Api do
   defp phase_operator_status("judge"), do: "judging"
   defp phase_operator_status("refiner"), do: "refining"
   defp phase_operator_status(_), do: "running"
+
+  defp completed_card(run) do
+    run
+    |> run_card()
+    |> Map.merge(%{
+      state: "Completed",
+      status: "completed",
+      operator_status: "completed",
+      operator_summary: run.last_message || "Movement completed."
+    })
+  end
 
   defp retry_card(retry) do
     agent_profile = retry.agent_profile || %{}

@@ -828,6 +828,57 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
   );
 }
 
+function upsertMovementRunIntoKanban(kanban: KanbanState | undefined, rawRun: unknown): KanbanState {
+  const parsed = KanbanCardSchema.safeParse(rawRun);
+  const run = parsed.success ? parsed.data : (rawRun || {}) as z.infer<typeof KanbanCardSchema>;
+  const key = String(run.issue_id || run.id || run.linear_identifier || run.identifier || '');
+  const targetId = kanbanColumnIdForRun(run);
+  const generatedAt = new Date().toISOString();
+  const baseColumns = kanban?.columns?.length
+    ? kanban.columns
+    : [
+        { id: 'running', title: 'Running', count: 0, cards: [] },
+        { id: 'retrying', title: 'Retrying', count: 0, cards: [] },
+        { id: 'completed', title: 'Completed', count: 0, cards: [] }
+      ];
+
+  const columns = baseColumns.map(column => ({
+    ...column,
+    cards: column.cards.filter(card => {
+      const cardKey = String(card.issue_id || card.id || card.linear_identifier || card.identifier || '');
+      return !key || cardKey !== key;
+    })
+  }));
+
+  const targetIndex = columns.findIndex(column => column.id === targetId);
+  const targetColumn = targetIndex >= 0
+    ? columns[targetIndex]
+    : { id: targetId, title: kanbanColumnTitle(targetId), count: 0, cards: [] };
+  const updatedTarget = { ...targetColumn, cards: [run, ...targetColumn.cards], count: targetColumn.cards.length + 1 };
+  const updatedColumns = targetIndex >= 0
+    ? columns.map((column, index) => index === targetIndex ? updatedTarget : { ...column, count: column.cards.length })
+    : [...columns.map(column => ({ ...column, count: column.cards.length })), updatedTarget];
+
+  return {
+    ...(kanban || {}),
+    generated_at: generatedAt,
+    columns: updatedColumns
+  };
+}
+
+function kanbanColumnIdForRun(run: z.infer<typeof KanbanCardSchema>) {
+  const status = String(run.operator_status || run.status || run.state || run.stage || run.phase || '').toLowerCase();
+  if (status.includes('retry')) return 'retrying';
+  if (status.includes('complete') || status.includes('done')) return 'completed';
+  return 'running';
+}
+
+function kanbanColumnTitle(id: string) {
+  if (id === 'retrying') return 'Retrying';
+  if (id === 'completed') return 'Completed';
+  return 'Running';
+}
+
 function agentProfileFromCard(raw: z.infer<typeof KanbanCardSchema>) {
   const profile = raw.agent_profile;
   if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
@@ -1248,7 +1299,11 @@ function App() {
   const createMovement = useMutation({
     mutationFn: (payload: ManualMovementPayload) =>
       api<Record<string, unknown>>(base, '/api/movements', { method: 'POST', body: JSON.stringify(payload) }, 12_000),
-    onSuccess: () => {
+    onSuccess: data => {
+      const run = data && typeof data === 'object' ? data.run : undefined;
+      if (run && typeof run === 'object') {
+        queryClient.setQueryData<KanbanState>(['kanban', base], current => upsertMovementRunIntoKanban(current, run));
+      }
       invalidateLiveData();
       queryClient.invalidateQueries({ queryKey: ['rehearsalCheck', base] });
     }

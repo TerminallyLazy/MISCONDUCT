@@ -150,6 +150,27 @@ defmodule Symphony.OrchestratorPollingTest do
     assert get_in(started_event, [:data, "phase"]) == "build"
   end
 
+  test "completed movements stay visible in recent completed runs", %{dir: dir} do
+    ensure_builder_profile()
+    {:ok, pid} = start_orchestrator(dir, poll_interval_ms: 0)
+
+    assert {:ok, _run} =
+             Orchestrator.enqueue_issue(issue("manual-1", "MOV-1", "Visible finale"), nil, pid)
+
+    assert eventually(fn ->
+             snap = Orchestrator.snapshot(pid)
+
+             snap.counts.running == 0 and snap.counts.completed == 1 and
+               Enum.any?(snap.completed_runs, &(&1.issue_identifier == "MOV-1"))
+           end)
+
+    snap = Orchestrator.snapshot(pid)
+    [completed] = snap.completed_runs
+    assert completed.status == :completed
+    assert completed.issue.title == "Visible finale"
+    assert completed.last_event
+  end
+
   test "judge pass verdict completes with no retry", %{dir: dir} do
     issue = issue("poll-judge", "TER-JUDGE", "Judge real builder output")
     Application.put_env(:symphony_elixir, :test_linear_issues, [issue])

@@ -585,12 +585,14 @@ defmodule Symphony.Orchestrator do
     }
 
   defp complete(state, id),
-    do: %{
-      state
-      | running: Map.delete(state.running, id),
-        claimed: MapSet.put(state.claimed, id),
-        completed: MapSet.put(state.completed, id)
-    }
+    do:
+      %{
+        state
+        | running: Map.delete(state.running, id),
+          claimed: MapSet.put(state.claimed, id),
+          completed: MapSet.put(state.completed, id),
+          completed_runs: completed_runs(state, id)
+      }
 
   defp retry_id(state, id, error, metadata \\ %{}) do
     {issue, attempt, run_metadata} =
@@ -1438,6 +1440,7 @@ defmodule Symphony.Orchestrator do
       },
       running: Enum.map(state.running, fn {_id, e} -> e.run end),
       retrying: Map.values(state.retry_attempts),
+      completed_runs: completed_run_values(state.completed_runs),
       codex_totals: state.codex_totals,
       rate_limits: state.codex_rate_limits,
       polling: %{
@@ -1448,4 +1451,40 @@ defmodule Symphony.Orchestrator do
       }
     }
   end
+
+  defp completed_runs(state, id) do
+    case state.running[id] do
+      %{run: run} ->
+        run =
+          %{
+            run
+            | status: :completed,
+              last_event: run.last_event || "completed",
+              last_message: run.last_message || "#{phase_label(run.phase)} run completed.",
+              last_event_at: run.last_event_at || DateTime.utc_now()
+          }
+
+        state.completed_runs
+        |> Map.put(id, run)
+        |> trim_completed_runs()
+
+      _ ->
+        state.completed_runs
+    end
+  end
+
+  defp completed_run_values(completed_runs) do
+    completed_runs
+    |> Map.values()
+    |> Enum.sort_by(&run_sort_time/1, {:desc, DateTime})
+  end
+
+  defp trim_completed_runs(completed_runs) do
+    completed_runs
+    |> completed_run_values()
+    |> Enum.take(20)
+    |> Map.new(&{&1.issue_id, &1})
+  end
+
+  defp run_sort_time(run), do: run.last_event_at || run.started_at || ~U[1970-01-01 00:00:00Z]
 end
