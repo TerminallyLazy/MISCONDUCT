@@ -9,4 +9,4 @@ It builds:
 - Linux x86_64 AppImage/DEB
 - Linux ARM64 AppImage/DEB
 
-Push tag `v0.1.12` or run the workflow manually from GitHub Actions to produce release artifacts.
+Push tag `v0.1.13` or run the workflow manually from GitHub Actions to produce release artifacts.

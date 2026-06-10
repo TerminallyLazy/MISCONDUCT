@@ -453,12 +453,14 @@ defmodule Symphony.Workflow.Files do
     - Movement I / Build: perform scoped implementation in the workspace.
     - Movement II / Judge: verify outputs against the rubric.
     - Movement III / Refine: fix judge findings without expanding scope.
+    - Retuning / Re-evaluate: when execution is blocked, failing, looping, mocked, or otherwise dissonant, return through Judge and Refiner before completion.
     - Finale / Complete: mark work ready only after validation gates pass.
 
     ## Validation Gates
     - Manual movement title and brief are present before conducting work.
     - Active provider is Direct Codex and the local Codex CLI is authenticated.
     - Stage agent profiles referenced in front matter are enabled.
+    - Dissonant states require re-evaluation and refinement before any completion event.
     - Secrets remain environment references and are never written literally.
     - Changed files stay within the configured workspace/repository policy.
 
@@ -582,10 +584,12 @@ defmodule Symphony.Workflow.Files do
     - Movement I / Build: run Codex in the issue workspace.
     - Movement II / Judge: verify outputs, file changes, and safety constraints.
     - Movement III / Refine: address judge findings with bounded retries.
+    - Retuning / Re-evaluate: when execution is blocked, failing, looping, mocked, or otherwise dissonant, return through Judge and Refiner before completion.
     - Finale / Complete: mark work ready only after validation gates pass.
 
     ## Validation Gates
     - Issue context must be real and present.
+    - Dissonant states require re-evaluation and refinement before any completion event.
     - Secrets must remain environment references, never literal values.
     - Generated or changed files must stay inside the workspace/repository policy.
     - Judge findings must be resolved or explicitly escalated.
@@ -696,10 +700,12 @@ defmodule Symphony.Workflow.Files do
     - Composition: implement scoped changes.
     - Rehearsal: run available project validation commands.
     - Critique: judge changes and identify refinements.
+    - Retuning: return dissonant, failed, hanging, mocked, or broken work through review and refinement.
     - Performance: prepare final summary and artifacts.
 
     ## Validation Gates
     - Commands must come from repository files or be marked unresolved.
+    - Dissonant states require re-evaluation and refinement before any completion event.
     - Paths must remain inside allowed project/workspace roots.
     - Judge approval is required before activation/completion.
 

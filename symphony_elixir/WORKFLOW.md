@@ -149,12 +149,14 @@ Coordinate operator-supplied Symphony movements through Direct Codex builder, ju
 - Movement I / Build: perform scoped implementation in the workspace.
 - Movement II / Judge: verify outputs against the rubric.
 - Movement III / Refine: fix judge findings without expanding scope.
+- Retuning / Re-evaluate: when execution is blocked, failing, looping, mocked, or otherwise dissonant, return through Judge and Refiner before completion.
 - Finale / Complete: mark work ready only after validation gates pass.
 
 ## Validation Gates
 - Manual movement title and brief are present before conducting work.
 - Active provider is Direct Codex and the local Codex CLI is authenticated.
 - Stage agent profiles referenced in front matter are enabled.
+- Dissonant states require re-evaluation and refinement before any completion event.
 - Secrets remain environment references and are never written literally.
 - Changed files stay within the configured workspace/repository policy.
 

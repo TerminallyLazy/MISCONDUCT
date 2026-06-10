@@ -473,7 +473,8 @@ const audioScales = {
   blocked: [0, 1, 3, 5, 7, 8, 10]
 };
 
-type OrchestraAudioState = { enabled: boolean; ready: boolean; activeVoices: number; error?: string };
+type OrchestraTuning = 'silent' | 'ready' | 'in_tune' | 'reviewing' | 'retuning' | 'dissonant';
+type OrchestraAudioState = { enabled: boolean; ready: boolean; activeVoices: number; tuning: OrchestraTuning; error?: string };
 
 function useAgentOrchestra({ enabled, cards, idleMusicians, offline }: { enabled: boolean; cards: Card[]; idleMusicians: IdleMusician[]; offline: boolean }): OrchestraAudioState {
   const cardsRef = useRef(cards);
@@ -484,17 +485,18 @@ function useAgentOrchestra({ enabled, cards, idleMusicians, offline }: { enabled
   const timerRef = useRef<number | null>(null);
   const stepRef = useRef(0);
   const nextTimeRef = useRef(0);
-  const [audioState, setAudioState] = useState<OrchestraAudioState>({ enabled, ready: false, activeVoices: 0 });
+  const [audioState, setAudioState] = useState<OrchestraAudioState>({ enabled, ready: false, activeVoices: 0, tuning: 'silent' });
 
   useEffect(() => {
     cardsRef.current = cards;
     idleRef.current = idleMusicians;
     offlineRef.current = offline;
     const activeVoices = orchestraVoiceCount(cards, idleMusicians, offline);
+    const tuning = orchestraTuning(cards, offline);
     setAudioState(prev => (
-      prev.enabled === enabled && prev.activeVoices === activeVoices
+      prev.enabled === enabled && prev.activeVoices === activeVoices && prev.tuning === tuning
         ? prev
-        : { ...prev, enabled, activeVoices }
+        : { ...prev, enabled, activeVoices, tuning }
     ));
   }, [cards, idleMusicians, enabled, offline]);
 
@@ -505,12 +507,14 @@ function useAgentOrchestra({ enabled, cards, idleMusicians, offline }: { enabled
       timerRef.current = null;
       const ready = Boolean(ctxRef.current);
       setAudioState(prev => (
-        !prev.enabled && prev.ready === ready && prev.activeVoices === 0
+        !prev.enabled && prev.ready === ready && prev.activeVoices === 0 && prev.tuning === 'silent'
           ? prev
-          : { ...prev, enabled: false, ready, activeVoices: 0 }
+          : { ...prev, enabled: false, ready, activeVoices: 0, tuning: 'silent' }
       ));
       return;
     }
+
+    let cancelled = false;
 
     try {
       const AudioCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -529,18 +533,38 @@ function useAgentOrchestra({ enabled, cards, idleMusicians, offline }: { enabled
         master.connect(compressor).connect(ctx.destination);
         masterRef.current = master;
       }
-      void ctx.resume();
-      masterRef.current.gain.cancelScheduledValues(ctx.currentTime);
-      masterRef.current.gain.linearRampToValueAtTime(0.16, ctx.currentTime + 0.35);
-      nextTimeRef.current = ctx.currentTime + 0.05;
-      if (timerRef.current) window.clearInterval(timerRef.current);
-      timerRef.current = window.setInterval(() => scheduleOrchestra(ctx, masterRef.current!, cardsRef, idleRef, offlineRef, stepRef, nextTimeRef), 30);
-      setAudioState({ enabled: true, ready: true, activeVoices: orchestraVoiceCount(cardsRef.current, idleRef.current, offlineRef.current) });
+      const startAudio = () => {
+        if (cancelled) return;
+        masterRef.current!.gain.cancelScheduledValues(ctx.currentTime);
+        masterRef.current!.gain.linearRampToValueAtTime(0.32, ctx.currentTime + 0.28);
+        nextTimeRef.current = ctx.currentTime + 0.05;
+        if (timerRef.current) window.clearInterval(timerRef.current);
+        scheduleAuditionCue(ctx, masterRef.current!);
+        timerRef.current = window.setInterval(() => scheduleOrchestra(ctx, masterRef.current!, cardsRef, idleRef, offlineRef, stepRef, nextTimeRef), 30);
+        setAudioState({
+          enabled: true,
+          ready: ctx.state === 'running',
+          activeVoices: orchestraVoiceCount(cardsRef.current, idleRef.current, offlineRef.current),
+          tuning: orchestraTuning(cardsRef.current, offlineRef.current),
+          error: undefined
+        });
+      };
+
+      void ctx.resume().then(startAudio).catch(error => {
+        setAudioState({
+          enabled: false,
+          ready: false,
+          activeVoices: 0,
+          tuning: 'silent',
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
     } catch (err) {
-      setAudioState({ enabled: false, ready: false, activeVoices: 0, error: err instanceof Error ? err.message : String(err) });
+      setAudioState({ enabled: false, ready: false, activeVoices: 0, tuning: 'silent', error: err instanceof Error ? err.message : String(err) });
     }
 
     return () => {
+      cancelled = true;
       if (timerRef.current) window.clearInterval(timerRef.current);
       timerRef.current = null;
     };
@@ -552,7 +576,16 @@ function useAgentOrchestra({ enabled, cards, idleMusicians, offline }: { enabled
 function orchestraVoiceCount(cards: Card[], idleMusicians: IdleMusician[], offline: boolean) {
   if (offline) return 0;
   const idleCount = idleMusicians.filter(musician => musician.status === 'idle').length;
-  return Math.min(12, cards.length + Math.min(8, idleCount));
+  return Math.min(12, Math.max(1, cards.length + Math.min(8, idleCount)));
+}
+
+function orchestraTuning(cards: Card[], offline: boolean): OrchestraTuning {
+  if (offline) return 'silent';
+  if (cards.some(card => `${card.column} ${card.status}`.toLowerCase().match(/block|fail|error|reject/))) return 'dissonant';
+  if (cards.some(card => `${card.column} ${card.status}`.toLowerCase().match(/retry|refin|backoff/))) return 'retuning';
+  if (cards.some(card => `${card.column} ${card.status}`.toLowerCase().match(/review|judge/))) return 'reviewing';
+  if (cards.some(card => `${card.column} ${card.status}`.toLowerCase().match(/progress|run|execut/))) return 'in_tune';
+  return 'ready';
 }
 
 function scheduleOrchestra(
@@ -568,11 +601,12 @@ function scheduleOrchestra(
   while (nextTimeRef.current < ctx.currentTime + 0.14) {
     const cards = offlineRef.current ? [] : prioritizeCards(cardsRef.current).slice(0, 8);
     const idleMusicians = offlineRef.current ? [] : prioritizeIdleMusicians(idleRef.current).slice(0, Math.max(0, 12 - cards.length));
-    const totalVoices = cards.length + idleMusicians.length;
+    const totalVoices = Math.max(1, cards.length + idleMusicians.length + 1);
     if (totalVoices) {
       const hasBlocked = cards.some(card => card.column === 'Blocked');
       const hasRetry = cards.some(card => card.column === 'Retry');
       const scale = hasBlocked ? audioScales.blocked : hasRetry ? audioScales.retry : cards.some(card => card.column === 'In Progress') ? audioScales.active : audioScales.calm;
+      scheduleConductorVoice(ctx, out, cards, stepRef.current, nextTimeRef.current);
       cards.forEach((card, index) => scheduleCardVoice(ctx, out, card, index, totalVoices, scale, stepRef.current, nextTimeRef.current));
       idleMusicians.forEach((musician, index) => scheduleIdleVoice(ctx, out, musician, cards.length + index, totalVoices, scale, stepRef.current, nextTimeRef.current));
     }
@@ -591,6 +625,52 @@ function prioritizeIdleMusicians(musicians: IdleMusician[]) {
   return musicians
     .filter(musician => musician.status === 'idle')
     .sort((a, b) => sectionWeight(a.section) - sectionWeight(b.section) || a.agent.localeCompare(b.agent));
+}
+
+function scheduleAuditionCue(ctx: AudioContext, out: AudioNode) {
+  const now = ctx.currentTime + 0.04;
+  [60, 64, 67].forEach((midi, index) => {
+    playSynthNote(ctx, out, {
+      time: now + index * 0.09,
+      freq: midiToFreq(midi),
+      duration: 0.22,
+      gain: 0.055,
+      type: 'sine',
+      filterHz: 6200,
+      pan: 0
+    });
+  });
+}
+
+function scheduleConductorVoice(ctx: AudioContext, out: AudioNode, cards: Card[], step: number, time: number) {
+  const tuning = orchestraTuning(cards, false);
+  const rhythm = tuning === 'dissonant' ? 'retry' : tuning === 'retuning' ? 'review' : 'conductor';
+  if (!shouldPlay(rhythm, step, 0)) return;
+
+  const midi = tuning === 'dissonant' ? 38 : tuning === 'retuning' ? 43 : tuning === 'reviewing' ? 55 : 48;
+  const gain = tuning === 'dissonant' ? 0.05 : tuning === 'retuning' ? 0.042 : 0.035;
+  const type: OscillatorType = tuning === 'dissonant' ? 'sawtooth' : 'triangle';
+  playSynthNote(ctx, out, {
+    time,
+    freq: midiToFreq(midi),
+    duration: 0.18,
+    gain,
+    type,
+    filterHz: tuning === 'dissonant' ? 620 : 1600,
+    pan: 0
+  });
+
+  if (tuning === 'dissonant' && step % 6 === 0) {
+    playSynthNote(ctx, out, {
+      time: time + 0.05,
+      freq: midiToFreq(midi + 1),
+      duration: 0.22,
+      gain: gain * 0.85,
+      type: 'sawtooth',
+      filterHz: 520,
+      pan: 0.18
+    });
+  }
 }
 
 function scheduleCardVoice(ctx: AudioContext, out: AudioNode, card: Card, index: number, total: number, scale: number[], step: number, time: number) {
@@ -664,6 +744,7 @@ function idleRhythmFor(rhythm: string) {
 }
 
 function shouldPlay(rhythm: string, step: number, index: number) {
+  if (rhythm === 'conductor') return step % 4 === 0;
   if (rhythm === 'drone') return step % 8 === index % 4;
   if (rhythm === 'retry') return step % 3 === index % 3;
   if (rhythm === 'review') return step % 4 === index % 2;
@@ -1518,8 +1599,8 @@ function ConcertHeader({
         <span className={`pill ${rehearsalReady ? 'success' : rehearsalCheck ? 'warning' : 'neutral'}`} title={rehearsalIssue}>
           <CheckCircle2 size={14} /> {rehearsalStatus}
         </span>
-        <span className={`pill audioPill ${audioEnabled ? 'active' : 'neutral'}`} title={orchestraAudio.error || 'Generated from live agent cards'}>
-          <Waves size={14} /> {audioEnabled ? `${orchestraAudio.activeVoices} voices` : 'orchestra muted'}
+        <span className={`pill audioPill ${audioEnabled ? tuningStatusClass(orchestraAudio.tuning) : 'neutral'}`} title={orchestraAudio.error || tuningTitle(orchestraAudio.tuning)}>
+          <Waves size={14} /> {audioEnabled ? `${orchestraAudio.activeVoices} voices · ${tuningLabel(orchestraAudio.tuning)}` : 'orchestra muted'}
         </span>
         <button className={audioEnabled ? 'button primary' : 'button secondary'} onClick={onToggleAudio}>
           {audioEnabled ? <PauseCircle size={16} /> : <Volume2 size={16} />}
@@ -1748,7 +1829,7 @@ function OrchestraFloor({
           <div className="stageFloor" />
           <div className="pitRail" />
         </div>
-        <MovementRibbon movements={movements} activeVoices={orchestraAudio.activeVoices} />
+        <MovementRibbon movements={movements} activeVoices={orchestraAudio.activeVoices} tuning={orchestraAudio.tuning} />
         <Conductor active={cards.length > 0} />
         <CueLines cards={cards} />
         {renderedStations.map(station => (
@@ -1797,7 +1878,7 @@ function movementSummary(cards: Card[]) {
   return Array.from(grouped.entries()).map(([movement, items]) => ({ movement, count: items.length, intensity: Math.max(...items.map(i => i.intensity), 0) }));
 }
 
-function MovementRibbon({ movements, activeVoices }: { movements: { movement: string; count: number; intensity: number }[]; activeVoices: number }) {
+function MovementRibbon({ movements, activeVoices, tuning }: { movements: { movement: string; count: number; intensity: number }[]; activeVoices: number; tuning: OrchestraTuning }) {
   return (
     <div className="movementRibbon" aria-label="Workflow movements">
       <span className="movementLead"><Mic2 size={14} /> Live movements</span>
@@ -1806,7 +1887,7 @@ function MovementRibbon({ movements, activeVoices }: { movements: { movement: st
           {m.movement}<b>{m.count}</b>
         </span>
       )) : <span className="movementChip empty">No active movement</span>}
-      <span className="movementVoices"><Waves size={13} /> {activeVoices} audible voices</span>
+      <span className="movementVoices"><Waves size={13} /> {activeVoices} voices · {tuningLabel(tuning)}</span>
     </div>
   );
 }
@@ -2092,6 +2173,36 @@ function StatusPill({ status }: { status: string }) {
   const s = status.toLowerCase();
   const Icon = s.includes('block') ? AlertTriangle : s.includes('done') ? CheckCircle2 : s.includes('retry') ? Clock : s.includes('judge') || s.includes('review') ? BrainCircuit : s.includes('refin') || s.includes('execut') || s.includes('run') ? PlayCircle : CircleDot;
   return <span className={`pill ${statusClass(status)}`}><Icon size={13} />{status}</span>;
+}
+
+function tuningLabel(tuning: OrchestraTuning) {
+  return {
+    silent: 'silent',
+    ready: 'ready',
+    in_tune: 'in tune',
+    reviewing: 'reviewing',
+    retuning: 'retuning',
+    dissonant: 'dissonant'
+  }[tuning];
+}
+
+function tuningTitle(tuning: OrchestraTuning) {
+  return {
+    silent: 'Audio engine is stopped',
+    ready: 'Conductor pulse is ready',
+    in_tune: 'Active movement is in tune',
+    reviewing: 'Judge or review movement is active',
+    retuning: 'Retry or refinement movement is active',
+    dissonant: 'Blocked or failed movement is active'
+  }[tuning];
+}
+
+function tuningStatusClass(tuning: OrchestraTuning) {
+  if (tuning === 'dissonant') return 'danger';
+  if (tuning === 'retuning') return 'warning';
+  if (tuning === 'reviewing') return 'review';
+  if (tuning === 'in_tune' || tuning === 'ready') return 'active';
+  return 'neutral';
 }
 
 function statusClass(status: string) {
