@@ -131,8 +131,25 @@ jobs:
           if (!$ok) { throw "Backend health check failed" }
           .\bin\symphony_elixir.bat stop
           Pop-Location
-      - name: Pack backend archive for Tauri bundle
+      - name: Pack backend archive for Tauri bundle (Unix)
+        if: runner.os != 'Windows'
         run: npm run build:backend
+      - name: Pack backend archive for Tauri bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Test-Path src-tauri/resources/symphony_backend.tar.gz) {
+            Remove-Item -Force src-tauri/resources/symphony_backend.tar.gz
+          }
+          if (!(Test-Path src-tauri/resources/symphony_backend/bin/symphony_elixir.bat)) {
+            throw "Windows backend release script missing: src-tauri/resources/symphony_backend/bin/symphony_elixir.bat"
+          }
+          Push-Location src-tauri/resources
+          tar -czf symphony_backend.tar.gz symphony_backend
+          Pop-Location
+          if (!(Test-Path src-tauri/resources/symphony_backend.tar.gz)) {
+            throw "Backend archive missing: src-tauri/resources/symphony_backend.tar.gz"
+          }
       - name: Regenerate macOS app icon
         if: runner.os == 'macOS'
         run: |
