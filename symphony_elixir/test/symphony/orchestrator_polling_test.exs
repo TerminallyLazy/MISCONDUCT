@@ -18,10 +18,25 @@ defmodule Symphony.TestRunner do
        %{event: "session_started", message: "test #{run.phase || "build"} run started"}}
     )
 
+    maybe_write_conductor_score(run)
     maybe_write_judge_verdict(run)
     Process.sleep(250)
     :ok
   end
+
+  defp maybe_write_conductor_score(%{phase: "conductor", workspace_path: workspace_path} = run) do
+    path = Path.join([workspace_path, ".symphony", "conductor-score.md"])
+    File.mkdir_p!(Path.dirname(path))
+
+    File.write!(path, """
+    # Test Conductor Score
+
+    Movement: #{run.issue_identifier}
+    Builder should implement the scoped work and leave evidence for Judge.
+    """)
+  end
+
+  defp maybe_write_conductor_score(_run), do: :ok
 
   defp maybe_write_judge_verdict(%{phase: "judge", workspace_path: workspace_path}) do
     case next_judge_verdict() do
@@ -171,6 +186,71 @@ defmodule Symphony.OrchestratorPollingTest do
     assert completed.last_event
   end
 
+  test "configured conductor creates a score and hands it to builder", %{dir: dir} do
+    issue = issue("manual-conductor", "MOV-CONDUCT", "Conduct a real score")
+    Application.put_env(:symphony_elixir, :test_linear_issues, [issue])
+    ensure_conductor_and_builder_profiles()
+
+    {:ok, pid} =
+      start_orchestrator(dir,
+        poll_interval_ms: 0,
+        workflow_config: workflow_config_with_conductor()
+      )
+
+    Orchestrator.refresh(pid)
+
+    assert eventually(
+             fn ->
+               events = Events.list(100)
+
+               Enum.any?(events, &(&1.type == "issue.stage.started" and &1.stage == "conductor")) and
+                 Enum.any?(events, &(&1.type == "issue.score.ready" and &1.stage == "conductor")) and
+                 Enum.any?(events, &(&1.type == "issue.stage.started" and &1.stage == "build"))
+             end,
+             80
+           )
+
+    events = Events.list(100)
+
+    conductor_started =
+      Enum.find(events, &(&1.type == "issue.stage.started" and &1.stage == "conductor"))
+
+    build_started = Enum.find(events, &(&1.type == "issue.stage.started" and &1.stage == "build"))
+
+    assert get_in(conductor_started, [:data, "agent_profile", "id"]) == "workflow-generator"
+    assert get_in(build_started, [:data, "agent_profile", "id"]) == "workflow-builder"
+    assert get_in(build_started, [:data, "score_path"]) =~ ".symphony/conductor-score.md"
+
+    assert eventually(fn ->
+             snap = Orchestrator.snapshot(pid)
+
+             snap.counts.running == 0 and snap.counts.completed == 1 and
+               Enum.any?(snap.completed_runs, &(&1.issue_identifier == "MOV-CONDUCT"))
+           end)
+
+    snap = Orchestrator.snapshot(pid)
+    completed = Enum.find(snap.completed_runs, &(&1.issue_identifier == "MOV-CONDUCT"))
+    assert completed.score_path =~ ".symphony/conductor-score.md"
+    assert completed.score_summary =~ "Test Conductor Score"
+
+    assert Enum.any?(
+             completed.phase_history,
+             &(&1.phase == "conductor" and &1.status == "completed")
+           )
+
+    assert Enum.any?(completed.phase_history, &(&1.phase == "build" and &1.status == "completed"))
+
+    assert Enum.any?(
+             completed.conversation,
+             &(&1.from == "Workflow Conductor" and &1.to == "Codex Builder")
+           )
+
+    assert Enum.any?(
+             completed.conversation,
+             &(&1.from == "Codex Builder" and &1.to == "Workflow Conductor")
+           )
+  end
+
   test "judge pass verdict completes with no retry", %{dir: dir} do
     issue = issue("poll-judge", "TER-JUDGE", "Judge real builder output")
     Application.put_env(:symphony_elixir, :test_linear_issues, [issue])
@@ -307,8 +387,12 @@ defmodule Symphony.OrchestratorPollingTest do
     Orchestrator.refresh(pid)
 
     assert eventually(fn ->
-             Events.list(100)
-             |> Enum.any?(&(&1.type == "issue.stage.blocked" and &1.stage == "judge"))
+             blocked? = blocked_event?(issue, "judge")
+
+             snap = Orchestrator.snapshot(pid)
+
+             blocked? and snap.counts.running == 0 and snap.counts.retrying == 1 and
+               snap.counts.completed == 0
            end)
 
     snap = Orchestrator.snapshot(pid)
@@ -317,9 +401,7 @@ defmodule Symphony.OrchestratorPollingTest do
     assert snap.counts.completed == 0
     assert [%{phase: "judge", reason: :missing_judge_verdict}] = snap.retrying
 
-    blocked =
-      Events.list(100)
-      |> Enum.find(&(&1.type == "issue.stage.blocked" and &1.stage == "judge"))
+    blocked = blocked_event(issue, "judge")
 
     assert blocked.message =~ "Judge verdict artifact is missing"
     assert get_in(blocked, [:data, "reason"]) == "missing_judge_verdict"
@@ -349,9 +431,7 @@ defmodule Symphony.OrchestratorPollingTest do
              snap.counts.running == 0 and snap.counts.retrying == 1 and snap.counts.completed == 0
            end)
 
-    blocked =
-      Events.list(100)
-      |> Enum.find(&(&1.type == "issue.stage.blocked" and &1.stage == "judge"))
+    blocked = blocked_event(issue, "judge")
 
     assert blocked.status == "blocked"
     assert blocked.message =~ "not supported"
@@ -381,9 +461,7 @@ defmodule Symphony.OrchestratorPollingTest do
              snap.counts.running == 0 and snap.counts.retrying == 1 and snap.counts.completed == 0
            end)
 
-    blocked =
-      Events.list(100)
-      |> Enum.find(&(&1.type == "issue.stage.blocked" and &1.stage == "judge"))
+    blocked = blocked_event(issue, "judge")
 
     assert blocked.status == "blocked"
     assert blocked.message =~ "evidence is required"
@@ -405,8 +483,12 @@ defmodule Symphony.OrchestratorPollingTest do
     Orchestrator.refresh(pid)
 
     assert eventually(fn ->
-             Events.list(100)
-             |> Enum.any?(&(&1.type == "issue.stage.blocked" and &1.stage == "refiner"))
+             blocked? = blocked_event?(issue, "refiner")
+
+             snap = Orchestrator.snapshot(pid)
+
+             blocked? and snap.counts.running == 0 and snap.counts.retrying == 1 and
+               snap.counts.completed == 0
            end)
 
     snap = Orchestrator.snapshot(pid)
@@ -415,9 +497,7 @@ defmodule Symphony.OrchestratorPollingTest do
     assert snap.counts.completed == 0
     assert [%{phase: "refiner", reason: :agent_profile_missing}] = snap.retrying
 
-    blocked =
-      Events.list(100)
-      |> Enum.find(&(&1.type == "issue.stage.blocked" and &1.stage == "refiner"))
+    blocked = blocked_event(issue, "refiner")
 
     assert blocked.message =~ "Workflow refiner profile is not configured"
     assert get_in(blocked, [:data, "verdict"]) == "needs_refinement"
@@ -452,7 +532,7 @@ defmodule Symphony.OrchestratorPollingTest do
              80
            )
 
-    events = Events.list(200)
+    events = issue_events(issue, 200)
     assert Enum.count(events, &(&1.type == "issue.stage.started" and &1.stage == "refiner")) == 1
     assert Enum.count(events, &(&1.type == "issue.stage.started" and &1.stage == "judge")) == 2
 
@@ -481,8 +561,12 @@ defmodule Symphony.OrchestratorPollingTest do
     Orchestrator.refresh(pid)
 
     assert eventually(fn ->
-             Events.list(100)
-             |> Enum.any?(&(&1.type == "issue.stage.blocked" and &1.stage == "judge"))
+             blocked? = blocked_event?(issue, "judge")
+
+             snap = Orchestrator.snapshot(pid)
+
+             blocked? and snap.counts.running == 0 and snap.counts.retrying == 1 and
+               snap.counts.completed == 0
            end)
 
     snap = Orchestrator.snapshot(pid)
@@ -490,9 +574,7 @@ defmodule Symphony.OrchestratorPollingTest do
     assert snap.counts.retrying == 1
     assert snap.counts.completed == 0
 
-    blocked =
-      Events.list(100)
-      |> Enum.find(&(&1.type == "issue.stage.blocked" and &1.stage == "judge"))
+    blocked = blocked_event(issue, "judge")
 
     assert blocked.status == "blocked"
     assert blocked.message =~ "Workflow judge profile is not configured"
@@ -519,8 +601,12 @@ defmodule Symphony.OrchestratorPollingTest do
     Orchestrator.refresh(pid)
 
     assert eventually(fn ->
-             Events.list(100)
-             |> Enum.any?(&(&1.type == "issue.stage.blocked" and &1.stage == "judge"))
+             blocked? = blocked_event?(issue, "judge")
+
+             snap = Orchestrator.snapshot(pid)
+
+             blocked? and snap.counts.running == 0 and snap.counts.retrying == 1 and
+               snap.counts.completed == 0
            end)
 
     snap = Orchestrator.snapshot(pid)
@@ -529,9 +615,7 @@ defmodule Symphony.OrchestratorPollingTest do
     assert snap.counts.completed == 0
     assert [%{issue_identifier: "TER-NO-JUDGE"}] = snap.retrying
 
-    blocked =
-      Events.list(100)
-      |> Enum.find(&(&1.type == "issue.stage.blocked" and &1.stage == "judge"))
+    blocked = blocked_event(issue, "judge")
 
     assert blocked.status == "blocked"
     assert blocked.message =~ "#{missing_profile} is not configured"
@@ -562,8 +646,11 @@ defmodule Symphony.OrchestratorPollingTest do
     Orchestrator.refresh(pid)
 
     assert eventually(fn ->
-             Events.list(100)
-             |> Enum.any?(&(&1.type == "issue.stage.blocked" and &1.stage == "judge"))
+             blocked? = blocked_event?(issue, "judge")
+             snap = Orchestrator.snapshot(pid)
+
+             blocked? and snap.counts.running == 0 and snap.counts.retrying == 1 and
+               snap.counts.completed == 0
            end)
 
     snap = Orchestrator.snapshot(pid)
@@ -571,9 +658,7 @@ defmodule Symphony.OrchestratorPollingTest do
     assert snap.counts.retrying == 1
     assert snap.counts.completed == 0
 
-    blocked =
-      Events.list(100)
-      |> Enum.find(&(&1.type == "issue.stage.blocked" and &1.stage == "judge"))
+    blocked = blocked_event(issue, "judge")
 
     assert blocked.status == "blocked"
     assert blocked.message =~ "#{judge_profile} is disabled"
@@ -610,8 +695,11 @@ defmodule Symphony.OrchestratorPollingTest do
     Orchestrator.refresh(pid)
 
     assert eventually(fn ->
-             Events.list(100)
-             |> Enum.any?(&(&1.type == "issue.stage.blocked" and &1.stage == "refiner"))
+             blocked? = blocked_event?(issue, "refiner")
+             snap = Orchestrator.snapshot(pid)
+
+             blocked? and snap.counts.running == 0 and snap.counts.retrying == 1 and
+               snap.counts.completed == 0
            end)
 
     snap = Orchestrator.snapshot(pid)
@@ -619,9 +707,7 @@ defmodule Symphony.OrchestratorPollingTest do
     assert snap.counts.retrying == 1
     assert snap.counts.completed == 0
 
-    blocked =
-      Events.list(100)
-      |> Enum.find(&(&1.type == "issue.stage.blocked" and &1.stage == "refiner"))
+    blocked = blocked_event(issue, "refiner")
 
     assert blocked.status == "blocked"
     assert blocked.message =~ "#{refiner_profile} is disabled"
@@ -834,6 +920,34 @@ defmodule Symphony.OrchestratorPollingTest do
     }
   end
 
+  defp workflow_config_with_conductor do
+    workflow_config()
+    |> Map.put("generator", %{
+      "profile" => "workflow-generator",
+      "instructions" => "Turn the manual movement into a bounded score."
+    })
+    |> Map.update!("stage_agents", fn agents ->
+      [
+        %{
+          "profile" => "workflow-generator",
+          "name" => "Workflow Conductor",
+          "role" => "Generator",
+          "profile_key" => "workflow-generator",
+          "section" => "Woodwinds",
+          "instrument" => "Clarinet",
+          "capabilities" => ["workflow-generation", "planning"],
+          "music" => %{
+            "motif" => "Overture / Conductor Intake",
+            "section" => "Woodwinds",
+            "instrument" => "Clarinet"
+          },
+          "stage" => %{"section" => "woodwinds", "seat" => "front-left"}
+        }
+        | agents
+      ]
+    end)
+  end
+
   defp workflow_config_with_judge do
     workflow_config()
     |> Map.put("judge", %{
@@ -904,6 +1018,32 @@ defmodule Symphony.OrchestratorPollingTest do
   defp ensure_builder_profile do
     {:ok, _} =
       Symphony.AgentProfileRegistry.ensure_many([
+        %{
+          "id" => "workflow-builder",
+          "name" => "Codex Builder",
+          "role" => "Builder",
+          "profile_key" => "workflow-builder",
+          "section" => "Strings",
+          "instrument_name" => "Violin",
+          "enabled" => true,
+          "capabilities" => ["implementation", "codex"]
+        }
+      ])
+  end
+
+  defp ensure_conductor_and_builder_profiles do
+    {:ok, _} =
+      Symphony.AgentProfileRegistry.ensure_many([
+        %{
+          "id" => "workflow-generator",
+          "name" => "Workflow Conductor",
+          "role" => "Generator",
+          "profile_key" => "workflow-generator",
+          "section" => "Woodwinds",
+          "instrument_name" => "Clarinet",
+          "enabled" => true,
+          "capabilities" => ["workflow-generation", "planning"]
+        },
         %{
           "id" => "workflow-builder",
           "name" => "Codex Builder",
@@ -1012,6 +1152,23 @@ defmodule Symphony.OrchestratorPollingTest do
 
   defp issue(id, identifier, title),
     do: %Issue{id: id, identifier: identifier, title: title, state: "Todo"}
+
+  defp issue_events(issue, limit),
+    do: Events.list(limit) |> Enum.filter(&event_for_issue?(&1, issue))
+
+  defp blocked_event?(issue, stage),
+    do: Enum.any?(issue_events(issue, 100), &stage_blocked?(&1, stage))
+
+  defp blocked_event(issue, stage),
+    do: Enum.find(issue_events(issue, 100), &stage_blocked?(&1, stage))
+
+  defp stage_blocked?(event, stage),
+    do: event.type == "issue.stage.blocked" and event.stage == stage
+
+  defp event_for_issue?(event, issue),
+    do:
+      Map.get(event, :issue_id) == issue.id or
+        Map.get(event, :issue_identifier) == issue.identifier
 
   defp eventually(fun, attempts \\ 30)
 

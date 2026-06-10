@@ -308,7 +308,7 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
 
 .station {
   position: absolute; width: 116px; height: 72px; transform: translate(-50%, -50%); z-index: 20;
-  border: 0; background: transparent; cursor: pointer;
+  border: 0; background: transparent; pointer-events: none;
 }
 .standTop { position: absolute; left: 16px; right: 16px; top: 9px; height: 38px; display: grid; place-items: center; background: var(--wood); border: 4px solid var(--ink); box-shadow: 0 8px 0 var(--wood-dark); }
 .stationLabel { position: absolute; left: 50%; top: 55px; transform: translateX(-50%); white-space: nowrap; padding: 3px 6px; border: 3px solid var(--ink); background: #fff8e8; font-size: 10px; font-weight: 900; }
@@ -446,8 +446,15 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
 @media (max-width: 1380px) {
   .concertShell { grid-template-columns: 220px minmax(680px, 1fr); }
   .inspectorRail { display: none; }
-  .orchestraDeck { grid-template-columns: 1fr; }
-  .scoreConsole { display: none; }
+  .orchestraDeck { grid-template-columns: minmax(520px, 1fr) 320px; }
+}
+
+@media (max-width: 1040px) {
+  .concertShell { height: auto; min-height: 100vh; grid-template-columns: 1fr; }
+  .conductorSidebar { min-height: auto; }
+  .contentArea { overflow: visible; }
+  .orchestraDeck { grid-template-columns: 1fr; grid-template-rows: minmax(620px, auto) minmax(340px, auto); }
+  .scoreConsole { min-height: 340px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -557,6 +564,75 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
 .timelineRow b { font-size: 10px; text-transform: uppercase; color: #75502a; }
 .timelineRow span { overflow-wrap: anywhere; }
 .debugPanel.inline { margin: 0; max-height: 180px; }
+.scoreArtifact {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  padding: 10px;
+  border: 3px solid var(--ink);
+  background: #fff8e8;
+  box-shadow: 4px 4px 0 #0002;
+}
+.scoreArtifact b { font-size: 11px; text-transform: uppercase; color: #75502a; }
+.scoreArtifact p { margin: 0; line-height: 1.4; overflow-wrap: anywhere; }
+.scoreArtifact code { overflow-wrap: anywhere; }
+.phaseTrace { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.phaseChip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 2px solid var(--ink);
+  background: #efe4c7;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.phaseChip.active { background: #d7edf2; }
+.phaseChip.review { background: #e7daf8; }
+.phaseChip.warning { background: #ffe58a; }
+.phaseChip.success { background: #dcefb6; }
+.phaseChip.danger { background: #ffd4d0; }
+.conversationPanel {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: 10px;
+  border: 3px solid var(--ink);
+  background: #f5e7bf;
+}
+.conversationPanel.empty { max-height: none; background: #fff8e8; }
+.conversationPanel.empty p { margin: 0; color: var(--muted); }
+.speechRow { display: flex; justify-content: flex-start; }
+.speechRow.own { justify-content: flex-end; }
+.conversationPanel .speechBubble {
+  position: static;
+  left: auto;
+  top: auto;
+  min-width: 0;
+  width: min(100%, 260px);
+  padding: 8px 10px;
+  border: 3px solid var(--ink);
+  background: #fffdf5;
+  box-shadow: 3px 3px 0 #0002;
+  font-size: 12px;
+}
+.speechRow.own .speechBubble { background: #e0f0d1; }
+.speechMeta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+  color: #75502a;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.speechMeta b, .speechMeta span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversationPanel .speechBubble p { margin: 0; line-height: 1.4; overflow-wrap: anywhere; }
 .movementTools { display: grid; gap: 9px; margin-top: 16px; }
 .section-strings .body { background: #617cc1; }
 .section-woodwinds .body { background: #72b7a1; }

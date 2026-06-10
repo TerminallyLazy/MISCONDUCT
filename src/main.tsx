@@ -78,6 +78,10 @@ const KanbanCardSchema = z.object({
   last_message: z.string().nullable().optional(),
   turn_count: z.number().optional(),
   tokens: z.object({ total_tokens: z.number().default(0) }).passthrough().optional(),
+  score_path: z.string().nullable().optional(),
+  score_summary: z.string().nullable().optional(),
+  phase_history: z.array(z.any()).optional(),
+  conversation: z.array(z.any()).optional(),
   agent_profile: z.any().optional(),
   agent_profile_id: z.string().nullable().optional(),
   agent_name: z.string().nullable().optional(),
@@ -148,6 +152,20 @@ type MusicProfile = {
   motif?: string;
   dynamic?: string;
   register?: string;
+};
+type AgentConversationMessage = {
+  at?: string;
+  from: string;
+  to: string;
+  stage?: string;
+  kind?: string;
+  message: string;
+};
+type PhaseHistoryEntry = {
+  at?: string;
+  phase?: string;
+  status?: string;
+  agent?: string;
 };
 type IdleMusician = {
   id: string;
@@ -239,6 +257,10 @@ type Card = {
   section: string;
   music?: MusicProfile;
   stagePosition?: StagePosition;
+  scorePath?: string;
+  scoreSummary?: string;
+  phaseHistory: PhaseHistoryEntry[];
+  conversation: AgentConversationMessage[];
   intensity: number;
   source: 'live';
   raw?: unknown;
@@ -408,7 +430,7 @@ function normalizeColumn(title: string) {
 function liveAgentFor(column: string, status: string) {
   const s = status.toLowerCase();
   if (column === 'Retry' || s.includes('retry')) return 'Backoff Agent';
-  if (column === 'Done' || s.includes('complete')) return 'Finisher';
+  if (column === 'Done' || s.includes('complete')) return 'Completed Movement';
   if (column === 'Blocked' || s.includes('block')) return 'Guardian';
   if (s.includes('refin')) return 'Refiner';
   if (column === 'Human Review' || s.includes('review') || s.includes('judge')) return 'Reviewer';
@@ -536,7 +558,7 @@ function useAgentOrchestra({ enabled, cards, idleMusicians, offline }: { enabled
       const startAudio = () => {
         if (cancelled) return;
         masterRef.current!.gain.cancelScheduledValues(ctx.currentTime);
-        masterRef.current!.gain.linearRampToValueAtTime(0.32, ctx.currentTime + 0.28);
+        masterRef.current!.gain.linearRampToValueAtTime(0.48, ctx.currentTime + 0.28);
         nextTimeRef.current = ctx.currentTime + 0.05;
         if (timerRef.current) window.clearInterval(timerRef.current);
         scheduleAuditionCue(ctx, masterRef.current!);
@@ -634,7 +656,7 @@ function scheduleAuditionCue(ctx: AudioContext, out: AudioNode) {
       time: now + index * 0.09,
       freq: midiToFreq(midi),
       duration: 0.22,
-      gain: 0.055,
+      gain: 0.14,
       type: 'sine',
       filterHz: 6200,
       pan: 0
@@ -648,7 +670,7 @@ function scheduleConductorVoice(ctx: AudioContext, out: AudioNode, cards: Card[]
   if (!shouldPlay(rhythm, step, 0)) return;
 
   const midi = tuning === 'dissonant' ? 38 : tuning === 'retuning' ? 43 : tuning === 'reviewing' ? 55 : 48;
-  const gain = tuning === 'dissonant' ? 0.05 : tuning === 'retuning' ? 0.042 : 0.035;
+  const gain = tuning === 'dissonant' ? 0.075 : tuning === 'retuning' ? 0.062 : 0.052;
   const type: OscillatorType = tuning === 'dissonant' ? 'sawtooth' : 'triangle';
   playSynthNote(ctx, out, {
     time,
@@ -700,7 +722,7 @@ function scheduleIdleVoice(ctx: AudioContext, out: AudioNode, musician: IdleMusi
   const degree = (step + index + seed) % scale.length;
   const midi = 36 + spec.octave * 12 + scale[degree] + (index % 2 === 0 ? 0 : 7);
   const pan = total <= 1 ? 0 : -0.7 + (index / (total - 1)) * 1.4;
-  playSynthNote(ctx, out, { time, freq: midiToFreq(midi), duration: spec.duration * 1.35, gain: spec.gain * 0.45, type: spec.type, filterHz: spec.filterHz, pan });
+  playSynthNote(ctx, out, { time, freq: midiToFreq(midi), duration: spec.duration * 1.35, gain: spec.gain * 0.62, type: spec.type, filterHz: spec.filterHz, pan });
 }
 
 type SynthSpec = { type: OscillatorType; octave: number; gain: number; duration: number; filterHz: number; rhythm: string };
@@ -708,17 +730,17 @@ type SynthSpec = { type: OscillatorType; octave: number; gain: number; duration:
 function synthSpec(voice: { column?: string; status: string; agent: string; instrumentName?: string; section?: string; music?: MusicProfile }) {
   const state = `${voice.column || ''} ${voice.status} ${voice.agent}`.toLowerCase();
   const instrument = `${voice.instrumentName || ''} ${voice.section || ''}`.toLowerCase();
-  let spec: SynthSpec = { type: 'sine' as OscillatorType, octave: 4, gain: 0.014, duration: 0.22, filterHz: 3000, rhythm: 'sparse' };
-  if (state.includes('block') || state.includes('guardian')) spec = { type: 'triangle' as OscillatorType, octave: 2, gain: 0.026, duration: 0.7, filterHz: 420, rhythm: 'drone' };
-  else if (state.includes('retry') || state.includes('backoff')) spec = { type: 'sawtooth' as OscillatorType, octave: 3, gain: 0.028, duration: 0.16, filterHz: 900, rhythm: 'retry' };
-  else if (instrument.includes('timpani') || instrument.includes('percussion') || instrument.includes('drum')) spec = { type: 'sawtooth' as OscillatorType, octave: 2, gain: 0.026, duration: 0.18, filterHz: 760, rhythm: 'retry' };
-  else if (instrument.includes('piano')) spec = { type: 'triangle' as OscillatorType, octave: 4, gain: 0.024, duration: 0.32, filterHz: 2400, rhythm: 'review' };
-  else if (instrument.includes('horn') || instrument.includes('trumpet') || instrument.includes('brass')) spec = { type: 'triangle' as OscillatorType, octave: 3, gain: 0.021, duration: 0.48, filterHz: 1150, rhythm: 'sparse' };
-  else if (instrument.includes('clarinet') || instrument.includes('oboe') || instrument.includes('flute') || instrument.includes('woodwind')) spec = { type: 'triangle' as OscillatorType, octave: 4, gain: 0.017, duration: 0.3, filterHz: 2100, rhythm: 'sparse' };
-  else if (instrument.includes('glockenspiel') || instrument.includes('bell')) spec = { type: 'sine' as OscillatorType, octave: 5, gain: 0.022, duration: 0.38, filterHz: 6200, rhythm: 'cadence' };
-  else if (state.includes('review') || state.includes('judge')) spec = { type: 'triangle' as OscillatorType, octave: 4, gain: 0.024, duration: 0.32, filterHz: 2400, rhythm: 'review' };
-  else if (state.includes('done') || state.includes('finish')) spec = { type: 'sine' as OscillatorType, octave: 5, gain: 0.024, duration: 0.42, filterHz: 6000, rhythm: 'cadence' };
-  else if (state.includes('progress') || state.includes('run') || state.includes('builder') || instrument.includes('violin') || instrument.includes('viola') || instrument.includes('strings')) spec = { type: 'square' as OscillatorType, octave: 4, gain: 0.022, duration: 0.13, filterHz: 1700, rhythm: 'arpeggio' };
+  let spec: SynthSpec = { type: 'sine' as OscillatorType, octave: 4, gain: 0.024, duration: 0.22, filterHz: 3000, rhythm: 'sparse' };
+  if (state.includes('block') || state.includes('guardian')) spec = { type: 'triangle' as OscillatorType, octave: 2, gain: 0.038, duration: 0.7, filterHz: 420, rhythm: 'drone' };
+  else if (state.includes('retry') || state.includes('backoff')) spec = { type: 'sawtooth' as OscillatorType, octave: 3, gain: 0.04, duration: 0.16, filterHz: 900, rhythm: 'retry' };
+  else if (instrument.includes('timpani') || instrument.includes('percussion') || instrument.includes('drum')) spec = { type: 'sawtooth' as OscillatorType, octave: 2, gain: 0.044, duration: 0.18, filterHz: 760, rhythm: 'retry' };
+  else if (instrument.includes('piano')) spec = { type: 'triangle' as OscillatorType, octave: 4, gain: 0.034, duration: 0.32, filterHz: 2400, rhythm: 'review' };
+  else if (instrument.includes('horn') || instrument.includes('trumpet') || instrument.includes('brass')) spec = { type: 'triangle' as OscillatorType, octave: 3, gain: 0.034, duration: 0.48, filterHz: 1150, rhythm: 'sparse' };
+  else if (instrument.includes('clarinet') || instrument.includes('oboe') || instrument.includes('flute') || instrument.includes('woodwind')) spec = { type: 'triangle' as OscillatorType, octave: 4, gain: 0.03, duration: 0.3, filterHz: 2100, rhythm: 'sparse' };
+  else if (instrument.includes('glockenspiel') || instrument.includes('bell')) spec = { type: 'sine' as OscillatorType, octave: 5, gain: 0.034, duration: 0.38, filterHz: 6200, rhythm: 'cadence' };
+  else if (state.includes('review') || state.includes('judge')) spec = { type: 'triangle' as OscillatorType, octave: 4, gain: 0.034, duration: 0.32, filterHz: 2400, rhythm: 'review' };
+  else if (state.includes('done') || state.includes('finish')) spec = { type: 'sine' as OscillatorType, octave: 5, gain: 0.034, duration: 0.42, filterHz: 6000, rhythm: 'cadence' };
+  else if (state.includes('progress') || state.includes('run') || state.includes('builder') || instrument.includes('violin') || instrument.includes('viola') || instrument.includes('strings')) spec = { type: 'square' as OscillatorType, octave: 4, gain: 0.032, duration: 0.13, filterHz: 1700, rhythm: 'arpeggio' };
   return applyMusicProfile(spec, voice.music);
 }
 
@@ -796,6 +818,8 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
       const instrumentName = assignedProfile?.instrument_name || stringField(rawRecord, 'instrument_name') || instrumentNameFor(section, agent, status);
       const music = musicProfile(assignedProfile?.music);
       const profileStagePosition = stagePosition(assignedProfile?.stage_position);
+      const conversation = conversationFromCard(rawRecord);
+      const phaseHistory = phaseHistoryFromCard(rawRecord);
 
       return {
         id: `${column.id}-${backendId}`,
@@ -820,6 +844,10 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
         section,
         music,
         stagePosition: profileStagePosition,
+        scorePath: stringField(rawRecord, 'score_path'),
+        scoreSummary: stringField(rawRecord, 'score_summary'),
+        phaseHistory,
+        conversation,
         intensity: intensityFor(tokens, turns, priority),
         source: 'live' as const,
         raw
@@ -897,6 +925,55 @@ function agentProfileFromCard(raw: z.infer<typeof KanbanCardSchema>) {
     music: value.music,
     stage_position: value.stage_position || value.stagePosition
   };
+}
+
+function conversationFromCard(raw: Record<string, unknown>): AgentConversationMessage[] {
+  const messages = raw.conversation;
+  if (!Array.isArray(messages)) return [];
+
+  return messages
+    .map<AgentConversationMessage | null>(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+      const record = item as Record<string, unknown>;
+      const message = stringField(record, 'message');
+      if (!message) return null;
+      return {
+        at: stringField(record, 'at') || undefined,
+        from: stringField(record, 'from') || 'Agent',
+        to: stringField(record, 'to') || 'Conductor',
+        stage: stringField(record, 'stage') || undefined,
+        kind: stringField(record, 'kind') || undefined,
+        message
+      };
+    })
+    .filter((item): item is AgentConversationMessage => Boolean(item))
+    .slice()
+    .reverse();
+}
+
+function phaseHistoryFromCard(raw: Record<string, unknown>): PhaseHistoryEntry[] {
+  const history = raw.phase_history;
+  if (!Array.isArray(history)) return [];
+
+  return history
+    .map<PhaseHistoryEntry | null>(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+      const record = item as Record<string, unknown>;
+      const phase = stringField(record, 'phase');
+      const profile = record.agent_profile && typeof record.agent_profile === 'object' && !Array.isArray(record.agent_profile)
+        ? record.agent_profile as Record<string, unknown>
+        : {};
+      if (!phase) return null;
+      return {
+        at: stringField(record, 'at') || undefined,
+        phase,
+        status: stringField(record, 'status') || undefined,
+        agent: stringField(profile, 'name') || undefined
+      };
+    })
+    .filter((item): item is PhaseHistoryEntry => Boolean(item))
+    .slice()
+    .reverse();
 }
 
 function stringField(value: Record<string, unknown>, key: string) {
@@ -1972,11 +2049,11 @@ function Conductor({ active }: { active: boolean }) {
 
 function Station({ station, count }: { station: StageStation; count: number }) {
   return (
-    <button className={`station station-${station.kind}`} style={{ left: `${station.x}%`, top: `${station.y}%` }}>
+    <div className={`station station-${station.kind}`} style={{ left: `${station.x}%`, top: `${station.y}%` }}>
       <span className="standTop"><FileText size={15} /></span>
       <span className="stationLabel">{station.label}</span>
       <span className="stationCount">{count}</span>
-    </button>
+    </div>
   );
 }
 
@@ -2179,8 +2256,55 @@ function MovementPanel({ card }: { card: Card }) {
         <div><dt>Agent</dt><dd>{card.agent}</dd></div>
         <div><dt>Backend ID</dt><dd><code>{card.backendId}</code></dd></div>
       </dl>
+      {(card.scoreSummary || card.scorePath) && (
+        <div className="scoreArtifact">
+          <b>Conductor score</b>
+          {card.scoreSummary && <p>{card.scoreSummary}</p>}
+          {card.scorePath && <code>{card.scorePath}</code>}
+        </div>
+      )}
+      <PhaseTrace entries={card.phaseHistory} />
+      <AgentConversation messages={card.conversation} activeAgent={card.agent} />
       <p>{card.message || card.retry || 'Waiting for the next orchestration cue.'}</p>
     </>
+  );
+}
+
+function PhaseTrace({ entries }: { entries: PhaseHistoryEntry[] }) {
+  if (!entries.length) return null;
+
+  return (
+    <div className="phaseTrace">
+      {entries.slice(-8).map((entry, index) => (
+        <span key={`${entry.phase}-${entry.status}-${entry.at || index}`} className={`phaseChip ${statusClass(entry.status || entry.phase || '')}`}>
+          {entry.phase}
+          {entry.agent ? ` · ${entry.agent}` : ''}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function AgentConversation({ messages, activeAgent }: { messages: AgentConversationMessage[]; activeAgent: string }) {
+  if (!messages.length) return <div className="conversationPanel empty"><p>No agent messages yet.</p></div>;
+
+  return (
+    <div className="conversationPanel" aria-label="Agent conversation">
+      {messages.slice(-12).map((message, index) => {
+        const own = message.from === activeAgent;
+        return (
+          <div className={own ? 'speechRow own' : 'speechRow'} key={`${message.at || index}-${message.from}-${message.kind || 'message'}`}>
+            <div className="speechBubble">
+              <div className="speechMeta">
+                <b>{message.from}</b>
+                <span>{message.to}{message.stage ? ` · ${message.stage}` : ''}</span>
+              </div>
+              <p>{message.message}</p>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -2190,6 +2314,7 @@ function MovementEvents({ card, debugPayload }: { card: Card; debugPayload: stri
     ['Status', card.status],
     ['Turns', String(card.turns)],
     ['Notes', card.tokens.toLocaleString()],
+    ['Score path', card.scorePath || 'none'],
     ['Retry due', card.retry || 'none'],
     ['Last message', card.message || 'none reported']
   ];
@@ -2603,7 +2728,7 @@ function WorkflowPanel({
       <div className="workflowComposer pixelPanel">
         <div className="panelHeader">
           <div>
-            <p className="eyebrow">Compose Score</p>
+            <p className="eyebrow">Compose Workflow</p>
             <h2><Workflow size={20} /> WORKFLOW.md Builder</h2>
           </div>
           <span className={`pill ${validation?.valid ? 'success' : validation?.writable ? 'warning' : 'idle'}`}>{validation?.valid ? 'ready to activate' : validation?.writable ? 'writable draft' : 'draft'}</span>

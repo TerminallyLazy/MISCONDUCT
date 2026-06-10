@@ -8,6 +8,12 @@ defmodule Symphony.HttpRouterTestRunner do
       %{event: "session_started", message: "router test movement accepted"}
     })
 
+    if run.phase == "conductor" do
+      path = Path.join([run.workspace_path, ".symphony", "conductor-score.md"])
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, "Router test Conductor score for #{run.issue_identifier}")
+    end
+
     :ok
   end
 end

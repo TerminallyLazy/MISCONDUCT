@@ -5,6 +5,8 @@ defmodule Symphony.Orchestrator do
   alias Symphony.Workspace.Manager
 
   @judge_verdict_relative_path ".symphony/judge-verdict.json"
+  @conductor_score_relative_path ".symphony/conductor-score.md"
+  @max_conversation_messages 40
 
   def start_link(opts),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -149,7 +151,8 @@ defmodule Symphony.Orchestrator do
               session_id: sid,
               turn_count:
                 if(ev == "turn_completed", do: run.turn_count + 1, else: run.turn_count),
-              events: [%{at: now, event: ev, message: msg} | Enum.take(run.events, 20)]
+              events: [%{at: now, event: ev, message: msg} | Enum.take(run.events, 20)],
+              conversation: agent_conversation(run, event, now)
           }
 
           %{e | run: nr}
@@ -320,8 +323,13 @@ defmodule Symphony.Orchestrator do
   end
 
   defp do_dispatch_result(issue, attempt, state) do
+    phase = initial_phase(state.config)
+    role = role_for_phase(phase)
+
     with {:ok, provider} <- Symphony.Orchestration.Providers.execution_ready(state.config),
-         {:ok, agent_profile} <- assigned_agent_profile(state.config, "builder"),
+         {:ok, agent_profile} <- assigned_agent_profile(state.config, role),
+         {:ok, agent_profile} <-
+           maybe_require_agent_profile(state.config, role, agent_profile),
          {:ok, ws} <- Manager.create_for_issue(issue.identifier, state.config),
          :ok <-
            Symphony.Hooks.Executor.run(
@@ -330,21 +338,31 @@ defmodule Symphony.Orchestrator do
              state.config.hook_timeout_ms
            ),
          {:ok, prompt} <-
-           Prompt.render(blank_prompt(state.config.workflow.prompt_template), issue, attempt, %{
-             agent: agent_profile || %{}
-           }) do
+           initial_prompt(state.config, issue, attempt, phase, agent_profile, ws.path),
+         :ok <- prepare_phase_artifacts(%{phase: phase, workspace_path: ws.path}) do
       run = %Run{
         issue_id: issue.id,
         issue_identifier: issue.identifier,
         issue: issue,
-        phase: "build",
+        phase: phase,
         agent_profile: agent_profile,
         attempt: attempt,
         workspace_path: ws.path,
         status: :running,
         started_at: DateTime.utc_now(),
         last_message: String.slice(prompt, 0, 160),
-        prompt: prompt
+        prompt: prompt,
+        score_path: conductor_score_path(%{workspace_path: ws.path}),
+        phase_history: [phase_history_entry(phase, agent_profile, :started)],
+        conversation: [
+          handoff_message(
+            issue,
+            phase,
+            "Operator",
+            agent_name(agent_profile),
+            initial_handoff_message(phase, issue)
+          )
+        ]
       }
 
       parent = self()
@@ -373,15 +391,16 @@ defmodule Symphony.Orchestrator do
       }
 
       publish_issue_event(ns, "issue.stage.started", issue, %{
-        stage: "build",
-        status: "running",
-        message: "#{provider.label} run started.",
+        stage: phase,
+        status: phase_status(phase),
+        message: "#{provider.label} #{phase_label(phase)} run started.",
         data: %{
           provider: provider.id,
           workspace_path: ws.path,
           attempt: attempt,
-          phase: "build",
-          agent_profile: agent_profile
+          phase: phase,
+          agent_profile: agent_profile,
+          score_path: conductor_score_path(%{workspace_path: ws.path})
         }
       })
 
@@ -413,6 +432,9 @@ defmodule Symphony.Orchestrator do
 
   defp finish(state, id, :normal) do
     case state.running[id] do
+      %{run: %{phase: "conductor"}} ->
+        finish_conductor_success(state, id)
+
       %{run: %{phase: "build"}} ->
         finish_build_success(state, id)
 
@@ -439,9 +461,47 @@ defmodule Symphony.Orchestrator do
     state |> add_runtime(id) |> retry_id(id, inspect(reason))
   end
 
+  defp finish_conductor_success(state, id) do
+    case state.running[id] do
+      nil ->
+        complete_run(state, id)
+
+      %{run: run} ->
+        state = add_runtime(state, id)
+
+        case read_conductor_score(run) do
+          {:ok, score} ->
+            state = put_run_score(state, id, score)
+
+            publish_run_event(state, id, "issue.score.ready", %{
+              stage: "conductor",
+              status: "completed",
+              message: "Conductor wrote a score for the orchestra.",
+              data: %{
+                score_path: conductor_score_path(run),
+                score_summary: score_excerpt(score)
+              }
+            })
+
+            case start_followup_phase(state, id, "build", %{conductor_score: score}) do
+              {:ok, next} ->
+                next
+
+              {:error, reason, message} ->
+                block_followup_start(state, id, "build", reason, message, %{
+                  score_path: conductor_score_path(run)
+                })
+            end
+
+          {:error, reason, message, data} ->
+            block_verdict(state, id, "conductor", reason, message, data)
+        end
+    end
+  end
+
   defp finish_build_success(state, id) do
     if phase_configured?(state.config, "judge") do
-      state = add_runtime(state, id)
+      state = state |> add_runtime(id) |> mark_phase_completed(id)
 
       case start_followup_phase(state, id, "judge") do
         {:ok, next} ->
@@ -456,7 +516,7 @@ defmodule Symphony.Orchestrator do
   end
 
   defp finish_refiner_success(state, id) do
-    state = add_runtime(state, id)
+    state = state |> add_runtime(id) |> mark_phase_completed(id)
 
     publish_run_event(state, id, "issue.stage.completed", %{
       stage: "refiner",
@@ -553,6 +613,19 @@ defmodule Symphony.Orchestrator do
 
   defp complete_run(state, id) do
     phase = current_phase(state, id)
+    from = current_agent_name(state, id) || phase_label(phase)
+
+    state =
+      state
+      |> mark_phase_completed(id)
+      |> append_run_conversation(
+        id,
+        from,
+        "Workflow Conductor",
+        phase,
+        "finale",
+        "#{phase_label(phase)} completed; the movement is ready for Finale."
+      )
 
     publish_run_event(state, id, "issue.execution.completed", %{
       stage: phase,
@@ -585,26 +658,35 @@ defmodule Symphony.Orchestrator do
     }
 
   defp complete(state, id),
-    do:
-      %{
-        state
-        | running: Map.delete(state.running, id),
-          claimed: MapSet.put(state.claimed, id),
-          completed: MapSet.put(state.completed, id),
-          completed_runs: completed_runs(state, id)
-      }
+    do: %{
+      state
+      | running: Map.delete(state.running, id),
+        claimed: MapSet.put(state.claimed, id),
+        completed: MapSet.put(state.completed, id),
+        completed_runs: completed_runs(state, id)
+    }
 
   defp retry_id(state, id, error, metadata \\ %{}) do
     {issue, attempt, run_metadata} =
       case state.running[id] do
         %{run: run} ->
+          issue = run.issue || %{}
+
           {%{
              id: run.issue_id || id,
-             identifier: run.issue_identifier || run.issue_id || id
+             identifier: run.issue_identifier || run.issue_id || id,
+             title: Map.get(issue, :title) || Map.get(issue, "title"),
+             description: Map.get(issue, :description) || Map.get(issue, "description"),
+             state: Map.get(issue, :state) || Map.get(issue, "state"),
+             labels: Map.get(issue, :labels) || Map.get(issue, "labels") || []
            }, run.attempt || 0,
            %{
              phase: run.phase,
              agent_profile: run.agent_profile,
+             score_path: run.score_path,
+             score_summary: run.score_summary,
+             phase_history: run.phase_history,
+             conversation: run.conversation,
              judge_verdict: run.judge_verdict,
              refiner_attempt: run.refiner_attempt,
              refiner_max_attempts: run.refiner_max_attempts
@@ -629,11 +711,19 @@ defmodule Symphony.Orchestrator do
     retry = %{
       issue_id: issue.id,
       issue_identifier: issue.identifier,
+      title: metadata[:title] || Map.get(issue, :title) || Map.get(issue, "title"),
+      description:
+        metadata[:description] || Map.get(issue, :description) || Map.get(issue, "description"),
+      labels: metadata[:labels] || Map.get(issue, :labels) || Map.get(issue, "labels") || [],
       attempt: next,
       due_at: DateTime.add(DateTime.utc_now(), delay, :millisecond),
       error: error,
       phase: metadata[:phase],
       agent_profile: metadata[:agent_profile],
+      score_path: metadata[:score_path],
+      score_summary: metadata[:score_summary],
+      phase_history: metadata[:phase_history],
+      conversation: metadata[:conversation],
       judge_verdict: metadata[:judge_verdict],
       verdict: metadata[:verdict],
       verdict_path: metadata[:verdict_path],
@@ -662,18 +752,92 @@ defmodule Symphony.Orchestrator do
   defp blank_prompt(nil), do: "You are working on a Symphony movement."
   defp blank_prompt(p), do: p
 
+  defp initial_phase(config) do
+    if phase_configured?(config, "generator"), do: "conductor", else: "build"
+  end
+
+  defp role_for_phase("conductor"), do: "generator"
+  defp role_for_phase("build"), do: "builder"
+  defp role_for_phase(phase), do: phase
+
+  defp maybe_require_agent_profile(config, role, agent_profile) do
+    if phase_configured?(config, role),
+      do: require_agent_profile(agent_profile, role),
+      else: {:ok, agent_profile}
+  end
+
+  defp initial_prompt(config, issue, attempt, "conductor", agent_profile, workspace_path),
+    do: conductor_prompt(config, issue, attempt, agent_profile, workspace_path)
+
+  defp initial_prompt(config, issue, attempt, "build", agent_profile, _workspace_path) do
+    Prompt.render(blank_prompt(config.workflow.prompt_template), issue, attempt, %{
+      agent: agent_profile || %{}
+    })
+  end
+
+  defp conductor_prompt(config, issue, attempt, agent_profile, workspace_path) do
+    generator_config = workflow_role_config(config, "generator")
+    instructions = map_get(generator_config, "instructions", nil)
+    score_path = conductor_score_path(%{workspace_path: workspace_path})
+
+    {:ok,
+     [
+       "You are #{agent_name(agent_profile)}, the Workflow Conductor for Symphony.",
+       "Conduct this operator movement into a bounded score before any Builder starts coding.",
+       "",
+       "Movement identifier: #{issue.identifier || issue.id}",
+       "Movement title: #{issue_title(issue)}",
+       "Movement state: #{Map.get(issue, :state) || "Manual"}",
+       "Attempt number: #{attempt || 0}",
+       "",
+       "Movement brief:",
+       Map.get(issue, :description) || "No score brief was provided.",
+       "",
+       "Required score artifact:",
+       "Write a Markdown score to #{score_path}.",
+       "The orchestrator will read this file after your process exits; a successful process without this score is not enough.",
+       "",
+       "Score contract:",
+       "- Restate the objective and non-goals.",
+       "- Name the Builder, Judge, and Refiner responsibilities.",
+       "- Identify exact repository/workspace facts still needed.",
+       "- List validation commands or evidence expected from the Builder and Judge.",
+       "- Include any dissonance conditions that should force re-evaluation.",
+       "",
+       instructions_line("Conductor", instructions),
+       "Do not implement the work. Prepare the score, then stop."
+     ]
+     |> Enum.reject(&(&1 == nil))
+     |> Enum.join("\n")}
+  end
+
   defp start_followup_phase(state, id, phase, context \\ %{}) do
     case state.running[id] do
       nil ->
         {:error, :run_missing, "Run #{id} is not active."}
 
       entry ->
+        role = role_for_phase(phase)
+
         with {:ok, provider} <- Symphony.Orchestration.Providers.execution_ready(state.config),
-             {:ok, agent_profile} <- assigned_agent_profile(state.config, phase),
-             {:ok, agent_profile} <- require_agent_profile(agent_profile, phase),
+             {:ok, agent_profile} <- assigned_agent_profile(state.config, role),
+             {:ok, agent_profile} <- require_agent_profile(agent_profile, role),
              {:ok, prompt} <-
                followup_prompt(state.config, entry.run, phase, agent_profile, context) do
           %Run{} = previous_run = entry.run
+
+          conversation =
+            [
+              handoff_message(
+                previous_run.issue,
+                phase,
+                agent_name(previous_run.agent_profile),
+                agent_name(agent_profile),
+                followup_handoff_message(phase, context)
+              )
+              | previous_run.conversation || []
+            ]
+            |> Enum.take(@max_conversation_messages)
 
           run = %{
             previous_run
@@ -689,6 +853,11 @@ defmodule Symphony.Orchestrator do
               tokens: zero_tokens(),
               events: [],
               prompt: prompt,
+              phase_history: [
+                phase_history_entry(phase, agent_profile, :started)
+                | previous_run.phase_history || []
+              ],
+              conversation: conversation,
               refiner_attempt:
                 Map.get(context, :refiner_attempt, previous_run.refiner_attempt || 0),
               refiner_max_attempts:
@@ -730,6 +899,8 @@ defmodule Symphony.Orchestrator do
                 attempt: run.attempt,
                 phase: phase,
                 agent_profile: agent_profile,
+                score_path: run.score_path,
+                score_summary: run.score_summary,
                 refiner_attempt: run.refiner_attempt,
                 refiner_max_attempts: run.refiner_max_attempts,
                 judge_verdict: run.judge_verdict,
@@ -753,6 +924,28 @@ defmodule Symphony.Orchestrator do
 
   defp require_agent_profile(profile, _role), do: {:ok, profile}
 
+  defp followup_prompt(config, run, "build", agent_profile, context) do
+    with {:ok, base_prompt} <-
+           Prompt.render(blank_prompt(config.workflow.prompt_template), run.issue, run.attempt, %{
+             agent: agent_profile || %{}
+           }) do
+      score = context[:conductor_score] || run.score_summary || read_conductor_score_text(run)
+
+      {:ok,
+       [
+         base_prompt,
+         "",
+         "Conductor score:",
+         score || "No Conductor score was available.",
+         "",
+         "You are #{agent_name(agent_profile)}, the Builder agent for Symphony.",
+         "Execute the bounded score in the real workspace. Keep changes scoped and leave concrete evidence for the Judge.",
+         "When complete, stop. Symphony will hand the workspace to the Judge."
+       ]
+       |> Enum.join("\n")}
+    end
+  end
+
   defp followup_prompt(config, build_run, "judge", agent_profile, _context) do
     judge_config = workflow_role_config(config, "judge")
     rubric = map_get(judge_config, "rubric", [])
@@ -771,6 +964,8 @@ defmodule Symphony.Orchestrator do
        "Builder profile: #{agent_name(build_run.agent_profile)}",
        "Builder last event: #{build_run.last_event || "not reported"}",
        "Builder last message: #{build_run.last_message || "not reported"}",
+       "Conductor score path: #{build_run.score_path || conductor_score_path(build_run)}",
+       "Conductor score summary: #{build_run.score_summary || "not reported"}",
        "",
        "Required verdict artifact:",
        "Write a JSON file to #{verdict_path}.",
@@ -879,10 +1074,68 @@ defmodule Symphony.Orchestrator do
         state
 
       entry ->
-        run = %{entry.run | judge_verdict: public_verdict(verdict)}
+        run = %{
+          entry.run
+          | judge_verdict: public_verdict(verdict),
+            phase_history: [
+              phase_history_entry("judge", entry.run.agent_profile, :completed)
+              | entry.run.phase_history || []
+            ]
+        }
+
         put_in(state.running[id], %{entry | run: run})
     end
   end
+
+  defp put_run_score(state, id, score) do
+    case state.running[id] do
+      nil ->
+        state
+
+      entry ->
+        run = %{
+          entry.run
+          | score_path: conductor_score_path(entry.run),
+            score_summary: score_excerpt(score),
+            phase_history: [
+              phase_history_entry("conductor", entry.run.agent_profile, :completed)
+              | entry.run.phase_history || []
+            ]
+        }
+
+        put_in(state.running[id], %{entry | run: run})
+    end
+  end
+
+  defp mark_phase_completed(state, id) do
+    case state.running[id] do
+      nil ->
+        state
+
+      entry ->
+        phase = entry.run.phase || "build"
+        history = entry.run.phase_history || []
+
+        run =
+          if phase_completed?(history, phase) do
+            entry.run
+          else
+            %{
+              entry.run
+              | phase_history: [
+                  phase_history_entry(phase, entry.run.agent_profile, :completed)
+                  | history
+                ]
+            }
+          end
+
+        put_in(state.running[id], %{entry | run: run})
+    end
+  end
+
+  defp phase_completed?([%{phase: phase, status: "completed"} | _], phase), do: true
+  defp phase_completed?([%{"phase" => phase, "status" => "completed"} | _], phase), do: true
+  defp phase_completed?(_, _), do: false
 
   defp public_verdict(verdict) do
     %{
@@ -944,6 +1197,37 @@ defmodule Symphony.Orchestrator do
       {:ok, normalized}
     else
       {:error, reason, message} -> {:error, reason, message}
+    end
+  end
+
+  defp read_conductor_score(run) do
+    path = conductor_score_path(run)
+
+    case File.read(path) do
+      {:ok, body} ->
+        score = String.trim(body)
+
+        if score == "" do
+          {:error, :empty_conductor_score, "Conductor score artifact is empty: #{path}",
+           %{score_path: path}}
+        else
+          {:ok, score}
+        end
+
+      {:error, :enoent} ->
+        {:error, :missing_conductor_score, "Conductor score artifact is missing: #{path}",
+         %{score_path: path}}
+
+      {:error, reason} ->
+        {:error, :conductor_score_read_failed,
+         "Conductor score artifact could not be read: #{inspect(reason)}", %{score_path: path}}
+    end
+  end
+
+  defp read_conductor_score_text(run) do
+    case read_conductor_score(run) do
+      {:ok, score} -> score
+      _ -> nil
     end
   end
 
@@ -1054,10 +1338,26 @@ defmodule Symphony.Orchestrator do
     end
   end
 
+  defp prepare_phase_artifacts(%{phase: "conductor"} = run) do
+    path = conductor_score_path(run)
+
+    with :ok <- File.mkdir_p(Path.dirname(path)) do
+      case File.rm(path) do
+        :ok -> :ok
+        {:error, :enoent} -> :ok
+        {:error, reason} -> {:error, {:conductor_score_cleanup_failed, reason}}
+      end
+    end
+  end
+
   defp prepare_phase_artifacts(_run), do: :ok
 
   defp judge_verdict_path(%{workspace_path: workspace_path}) do
     Path.join(workspace_path || ".", @judge_verdict_relative_path)
+  end
+
+  defp conductor_score_path(%{workspace_path: workspace_path}) do
+    Path.join(workspace_path || ".", @conductor_score_relative_path)
   end
 
   defp refiner_max_attempts(config) do
@@ -1286,16 +1586,138 @@ defmodule Symphony.Orchestrator do
     end
   end
 
+  defp current_agent_name(state, id) do
+    case state.running[id] do
+      %{run: %{agent_profile: profile}} -> agent_name(profile)
+      _ -> nil
+    end
+  end
+
   defp phase_label("build"), do: "Builder"
+  defp phase_label("conductor"), do: "Conductor"
   defp phase_label("judge"), do: "Judge"
   defp phase_label("refiner"), do: "Refiner"
   defp phase_label(phase), do: humanize(phase)
 
   defp phase_status("judge"), do: "judging"
   defp phase_status("refiner"), do: "refining"
+  defp phase_status("conductor"), do: "conducting"
   defp phase_status(_), do: "running"
 
   defp zero_tokens, do: %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
+
+  defp phase_history_entry(phase, agent_profile, status) do
+    %{
+      at: DateTime.utc_now(),
+      phase: phase,
+      status: to_string(status),
+      agent_profile: agent_profile
+    }
+  end
+
+  defp agent_conversation(run, event, at) do
+    message = event[:message]
+
+    if present?(message) do
+      [
+        conversation_message(
+          agent_name(run.agent_profile),
+          "Workflow Conductor",
+          run.phase || "build",
+          event[:event] || "agent_event",
+          message,
+          at
+        )
+        | run.conversation || []
+      ]
+      |> Enum.take(@max_conversation_messages)
+    else
+      run.conversation || []
+    end
+  end
+
+  defp append_run_conversation(state, id, from, to, stage, kind, message) do
+    case state.running[id] do
+      nil ->
+        state
+
+      entry ->
+        run = %{
+          entry.run
+          | conversation:
+              [
+                conversation_message(from, to, stage, kind, message, DateTime.utc_now())
+                | entry.run.conversation || []
+              ]
+              |> Enum.take(@max_conversation_messages)
+        }
+
+        put_in(state.running[id], %{entry | run: run})
+    end
+  end
+
+  defp handoff_message(issue, stage, from, to, message),
+    do:
+      conversation_message(from, to, stage, "handoff", message, DateTime.utc_now(), %{
+        issue_identifier: issue && (Map.get(issue, :identifier) || Map.get(issue, "identifier")),
+        issue_title: issue && (Map.get(issue, :title) || Map.get(issue, "title"))
+      })
+
+  defp conversation_message(from, to, stage, kind, message, at, data \\ %{}) do
+    %{
+      at: at,
+      from: from,
+      to: to,
+      stage: stage,
+      kind: to_string(kind || "message"),
+      message: message |> to_string() |> String.trim() |> String.slice(0, 1_200),
+      data: data
+    }
+  end
+
+  defp initial_handoff_message("conductor", issue),
+    do:
+      "Conduct #{issue.identifier || issue.id} into a bounded score before any implementation begins."
+
+  defp initial_handoff_message("build", issue),
+    do:
+      "Build #{issue.identifier || issue.id} from the operator movement and workflow guardrails."
+
+  defp initial_handoff_message(phase, issue),
+    do: "Start #{phase_label(phase)} for #{issue.identifier || issue.id}."
+
+  defp followup_handoff_message("build", context) do
+    score =
+      context[:conductor_score]
+      |> to_string()
+      |> String.trim()
+      |> score_excerpt()
+
+    if score == "" do
+      "Start implementation from the Conductor score."
+    else
+      "Start implementation from the Conductor score: #{score}"
+    end
+  end
+
+  defp followup_handoff_message("judge", _context),
+    do: "Review the Builder output and write the required evidence-backed verdict."
+
+  defp followup_handoff_message("refiner", context),
+    do:
+      "Resolve Judge findings and return the movement for re-evaluation. Attempt #{context[:refiner_attempt] || 0}/#{context[:refiner_max_attempts] || "?"}."
+
+  defp followup_handoff_message(phase, _context), do: "Start #{phase_label(phase)}."
+
+  defp score_excerpt(nil), do: nil
+
+  defp score_excerpt(score) do
+    score
+    |> to_string()
+    |> String.trim()
+    |> String.replace(~r/\s+/, " ")
+    |> String.slice(0, 600)
+  end
 
   defp agent_name(nil), do: "unassigned"
 
@@ -1377,6 +1799,8 @@ defmodule Symphony.Orchestrator do
                 session_id: run.session_id,
                 phase: run.phase,
                 agent_profile: run.agent_profile,
+                score_path: run.score_path,
+                score_summary: run.score_summary,
                 refiner_attempt: run.refiner_attempt,
                 refiner_max_attempts: run.refiner_max_attempts,
                 judge_verdict: run.judge_verdict
@@ -1387,6 +1811,8 @@ defmodule Symphony.Orchestrator do
               session_id: run.session_id,
               phase: run.phase,
               agent_profile: run.agent_profile,
+              score_path: run.score_path,
+              score_summary: run.score_summary,
               refiner_attempt: run.refiner_attempt,
               refiner_max_attempts: run.refiner_max_attempts,
               judge_verdict: run.judge_verdict
@@ -1418,6 +1844,8 @@ defmodule Symphony.Orchestrator do
         |> Map.drop([:message])
         |> Map.put(:phase, phase)
         |> Map.put(:agent_profile, entry && entry.run.agent_profile)
+        |> Map.put(:score_path, entry && entry.run.score_path)
+        |> Map.put(:score_summary, entry && entry.run.score_summary)
         |> Map.put(:refiner_attempt, entry && entry.run.refiner_attempt)
         |> Map.put(:refiner_max_attempts, entry && entry.run.refiner_max_attempts)
         |> Map.put(:judge_verdict, entry && entry.run.judge_verdict)

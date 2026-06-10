@@ -958,6 +958,10 @@ defmodule Symphony.Http.Api do
       started_at: run.started_at,
       turn_count: run.turn_count,
       tokens: run.tokens,
+      score_path: run.score_path,
+      score_summary: run.score_summary,
+      phase_history: run.phase_history || [],
+      conversation: run.conversation || [],
       refiner_attempt: run.refiner_attempt,
       refiner_max_attempts: run.refiner_max_attempts,
       judge_verdict: run.judge_verdict,
@@ -972,6 +976,7 @@ defmodule Symphony.Http.Api do
 
   defp phase_operator_status("judge"), do: "judging"
   defp phase_operator_status("refiner"), do: "refining"
+  defp phase_operator_status("conductor"), do: "conducting"
   defp phase_operator_status(_), do: "running"
 
   defp completed_card(run) do
@@ -994,7 +999,8 @@ defmodule Symphony.Http.Api do
       issue_id: retry.issue_id,
       identifier: retry.issue_identifier,
       linear_identifier: retry.issue_identifier,
-      title: retry.issue_identifier || retry.issue_id,
+      title: Map.get(retry, :title) || retry.issue_identifier || retry.issue_id,
+      description: Map.get(retry, :description),
       state: "Retrying",
       status: "retrying",
       stage: phase,
@@ -1008,6 +1014,10 @@ defmodule Symphony.Http.Api do
       agent_section: agent_profile[:section],
       instrument_name: agent_profile[:instrument_name],
       agent_profile_status: agent_profile[:status],
+      score_path: Map.get(retry, :score_path),
+      score_summary: Map.get(retry, :score_summary),
+      phase_history: Map.get(retry, :phase_history, []),
+      conversation: Map.get(retry, :conversation, []),
       judge_verdict: retry.judge_verdict,
       verdict: retry.verdict,
       verdict_path: retry.verdict_path,
@@ -1023,7 +1033,9 @@ defmodule Symphony.Http.Api do
   defp find_issue(id) do
     snap = Symphony.Orchestrator.snapshot()
 
-    (Enum.map(snap.running, &run_card/1) ++ Enum.map(snap.retrying, &retry_card/1))
+    (Enum.map(snap.running, &run_card/1) ++
+       Enum.map(snap.retrying, &retry_card/1) ++
+       Enum.map(Map.get(snap, :completed_runs, []), &completed_card/1))
     |> Enum.find(fn card ->
       Enum.any?(
         [card[:id], card[:issue_id], card[:identifier], card[:linear_identifier]],
