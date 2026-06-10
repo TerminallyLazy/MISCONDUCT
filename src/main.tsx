@@ -3097,6 +3097,14 @@ function SettingsPanel({
           ? codexPhaseLabel
           : 'Codex CLI missing';
   const backendControlsDisabled = backendBusy || !desktopBridgeAvailable;
+  const backendHealthy = Boolean(backendRuntime?.healthy);
+  const startBackendDisabled = backendControlsDisabled || backendHealthy;
+  const backendStatusLabel = backendHealthy ? 'Backend ready' : backendBusy ? 'Starting…' : 'Backend manager';
+  const backendActionHint = backendHealthy
+    ? 'Bundled backend is already running. Use Restart backend only when you need to relaunch the local runtime.'
+    : backendBusy
+      ? 'Starting the bundled backend and waiting for health.'
+      : 'Start the bundled backend to launch the packaged local runtime.';
   return (
     <section className="settingsStack">
       <div className="doc pixelPanel settingsHero">
@@ -3114,7 +3122,7 @@ function SettingsPanel({
             <p className="eyebrow">Managed local runtime</p>
             <h2><Server size={20} /> Bundled MISCONDUCT backend</h2>
           </div>
-          <span className={`pill ${backendRuntime?.healthy ? 'active' : 'neutral'}`}>{backendRuntime?.healthy ? 'Backend ready' : backendBusy ? 'Starting…' : 'Backend manager'}</span>
+          <span className={`pill ${backendHealthy ? 'active' : 'neutral'}`}>{backendStatusLabel}</span>
         </div>
         <p className="subtle">The packaged desktop app now starts and supervises its own local backend. No separate backend service should be required.</p>
         <div className="codexStatusGrid">
@@ -3129,11 +3137,15 @@ function SettingsPanel({
         {backendRuntimeError && <p className="formError">{backendRuntimeError}</p>}
         {backendRuntime?.lastError && <p className="formError">{String(backendRuntime.lastError)}</p>}
         <div className="formActions">
-          <button className="button primary" disabled={backendControlsDisabled} onClick={onStartBackend}><PlayCircle size={15} /> Start bundled backend</button>
+          <button className="button primary" disabled={startBackendDisabled} onClick={onStartBackend}>
+            {backendHealthy ? <CheckCircle2 size={15} /> : <PlayCircle size={15} />}
+            {backendHealthy ? 'Bundled backend running' : 'Start bundled backend'}
+          </button>
           <button className="button secondary" disabled={backendControlsDisabled} onClick={onRestartBackend}><RefreshCw size={15} /> Restart backend</button>
           <button className="button secondary" disabled={backendControlsDisabled} onClick={onRefreshBackend}>Refresh status</button>
           <button className="button secondary" disabled={backendControlsDisabled} onClick={onLoadBackendLogs}>Show logs</button>
         </div>
+        <p className="subtle">{backendActionHint}</p>
         <div className="targetPreview">
           <b>Current API base</b>
           <code>{backendRuntime?.baseUrl || base || 'starting bundled backend…'}</code>

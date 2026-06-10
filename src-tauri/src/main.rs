@@ -305,26 +305,24 @@ fn status_from_state(state: &BackendProcess) -> BackendInfo {
     }
 }
 
-#[tauri::command]
-fn backend_status(state: State<'_, BackendProcess>) -> BackendInfo {
-    status_from_state(&state)
+fn backend_status_impl(state: &BackendProcess) -> BackendInfo {
+    status_from_state(state)
 }
 
-#[tauri::command]
-fn ensure_backend_ready(
-    app: tauri::AppHandle,
-    state: State<'_, BackendProcess>,
+fn ensure_backend_ready_impl(
+    app: &tauri::AppHandle,
+    state: &BackendProcess,
 ) -> Result<BackendInfo, String> {
     if let Some(info) = state.info.lock().unwrap().clone() {
         if probe_health(info.port) {
-            return Ok(status_from_state(&state));
+            return Ok(status_from_state(state));
         }
     }
 
     let mut child_lock = state.child.lock().unwrap();
     if child_lock.is_some() {
         drop(child_lock);
-        return Ok(status_from_state(&state));
+        return Ok(status_from_state(state));
     }
 
     let port = choose_port()?;
@@ -418,9 +416,13 @@ fn ensure_backend_ready(
         log_path: Some(log_path.to_string_lossy().to_string()),
         last_error: None,
     });
+    drop(child_lock);
 
     if !wait_for_health(port, Duration::from_secs(30)) {
-        let exit_note = match child_lock
+        let exit_note = match state
+            .child
+            .lock()
+            .unwrap()
             .as_mut()
             .and_then(|child| child.try_wait().ok())
             .flatten()
@@ -451,31 +453,28 @@ fn ensure_backend_ready(
         &log_path,
         &format!("--- {} healthy ---", backend_source.label()),
     );
-    Ok(status_from_state(&state))
+    Ok(status_from_state(state))
 }
 
-#[tauri::command]
-fn backend_stop(state: State<'_, BackendProcess>) -> BackendInfo {
+fn backend_stop_impl(state: &BackendProcess) -> BackendInfo {
     if let Some(mut child) = state.child.lock().unwrap().take() {
         let _ = child.kill();
         let _ = child.wait();
     }
     *state.info.lock().unwrap() = None;
-    status_from_state(&state)
+    status_from_state(state)
 }
 
-#[tauri::command]
-fn backend_restart(
-    app: tauri::AppHandle,
-    state: State<'_, BackendProcess>,
+fn backend_restart_impl(
+    app: &tauri::AppHandle,
+    state: &BackendProcess,
 ) -> Result<BackendInfo, String> {
-    let _ = backend_stop(state.clone());
-    ensure_backend_ready(app, state)
+    let _ = backend_stop_impl(state);
+    ensure_backend_ready_impl(app, state)
 }
 
-#[tauri::command]
-fn backend_logs(
-    state: State<'_, BackendProcess>,
+fn backend_logs_impl(
+    state: &BackendProcess,
     max_bytes: Option<usize>,
 ) -> Result<BackendLogs, String> {
     let path = state.log_path.lock().unwrap().clone();
@@ -494,12 +493,54 @@ fn backend_logs(
     })
 }
 
+async fn with_backend_state<T, F>(app: tauri::AppHandle, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&tauri::AppHandle, &BackendProcess) -> Result<T, String> + Send + 'static,
+{
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<BackendProcess>();
+        f(&handle, &state)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
-fn default_api_base_url(
+fn backend_status(state: State<'_, BackendProcess>) -> BackendInfo {
+    backend_status_impl(&state)
+}
+
+#[tauri::command]
+async fn ensure_backend_ready(app: tauri::AppHandle) -> Result<BackendInfo, String> {
+    with_backend_state(app, |app, state| ensure_backend_ready_impl(app, state)).await
+}
+
+#[tauri::command]
+fn backend_stop(state: State<'_, BackendProcess>) -> BackendInfo {
+    backend_stop_impl(&state)
+}
+
+#[tauri::command]
+async fn backend_restart(app: tauri::AppHandle) -> Result<BackendInfo, String> {
+    with_backend_state(app, |app, state| backend_restart_impl(app, state)).await
+}
+
+#[tauri::command]
+async fn backend_logs(
     app: tauri::AppHandle,
-    state: State<'_, BackendProcess>,
-) -> Result<String, String> {
-    Ok(ensure_backend_ready(app, state)?.base_url)
+    max_bytes: Option<usize>,
+) -> Result<BackendLogs, String> {
+    with_backend_state(app, move |_app, state| backend_logs_impl(state, max_bytes)).await
+}
+
+#[tauri::command]
+async fn default_api_base_url(app: tauri::AppHandle) -> Result<String, String> {
+    with_backend_state(app, |app, state| {
+        Ok(ensure_backend_ready_impl(app, state)?.base_url)
+    })
+    .await
 }
 
 fn main() {
@@ -523,7 +564,7 @@ fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let state = window.state::<BackendProcess>();
-                let _ = backend_stop(state);
+                let _ = backend_stop_impl(&state);
             }
         })
         .build(tauri::generate_context!())
@@ -532,7 +573,7 @@ fn main() {
     app.run(|app_handle, event| {
         if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
             let state = app_handle.state::<BackendProcess>();
-            let _ = backend_stop(state);
+            let _ = backend_stop_impl(&state);
         }
     });
 }

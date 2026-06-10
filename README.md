@@ -8,8 +8,8 @@ Download packaged builds from GitHub Releases:
 
 https://github.com/TerminallyLazy/MISCONDUCT/releases/latest
 
-Current app metadata in this checkout is `0.1.16`. The public latest release page may
-still show older assets until tag `v0.1.16` is pushed and the desktop release workflow
+Current app metadata in this checkout is `0.1.17`. The public latest release page may
+still show older assets until tag `v0.1.17` is pushed and the desktop release workflow
 publishes new artifacts.
 
 The GitHub Actions workflow `.github/workflows/release-desktop.yml` is configured to build macOS arm64, Windows x86_64, and Linux x86_64 packages from release tags.
