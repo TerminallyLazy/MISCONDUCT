@@ -90,7 +90,7 @@ defmodule Symphony.Orchestration.Providers do
 
       true ->
         {:error, :agent_zero_adapter_pending,
-         "Agent Zero is configured, but Symphony does not have a production execution adapter wired yet.",
+         "Agent Zero is configured, but MISCONDUCT does not have a production execution adapter wired yet.",
          status(config)}
     end
   end

@@ -2011,6 +2011,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "misconduct_desktop"
+version = "0.1.16"
+dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-notification",
+ "tauri-plugin-store",
+]
+
+[[package]]
 name = "muda"
 version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3239,20 +3253,6 @@ dependencies = [
  "base64 0.21.7",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "symphony_desktop"
-version = "0.1.15"
-dependencies = [
- "flate2",
- "serde",
- "serde_json",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-notification",
- "tauri-plugin-store",
 ]
 
 [[package]]

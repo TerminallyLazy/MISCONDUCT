@@ -8,7 +8,7 @@ defmodule Symphony.Http.Dashboard do
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Symphony Dashboard</title>
+        <title>MISCONDUCT Dashboard</title>
         <style>
           :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
           body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top left, #23305f, #080b15 48%, #05060a); color: #eef2ff; }
@@ -24,7 +24,7 @@ defmodule Symphony.Http.Dashboard do
       <body>
         <main>
           <p>Agent-centric Elixir orchestrator</p>
-          <h1>Symphony Dashboard</h1>
+          <h1>MISCONDUCT Dashboard</h1>
           <p>Use the JSON operator API for the desktop console, workflow diagnostics, Kanban state, and issue-level debugging.</p>
           <section class="panel grid">
             <div><strong>Health</strong><p><code>GET /healthz</code></p></div>

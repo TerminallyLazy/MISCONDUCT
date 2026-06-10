@@ -1,4 +1,4 @@
-# Symphony Orchestration Confidence - Taste Evaluation
+# MISCONDUCT Orchestration Confidence - Taste Evaluation
 
 ## DVF Filter
 
@@ -19,7 +19,7 @@ No curated option was eliminated by DVF. Backend-Owned Hall has a lower feasibil
 
 Selected weights: Developer Tool profile.
 
-Rationale: Symphony is an operator/developer tool. Trust depends heavily on responsiveness and clear state, so Speed-as-Trust uses the developer-tool weight.
+Rationale: MISCONDUCT is an operator/developer tool. Trust depends heavily on responsiveness and clear state, so Speed-as-Trust uses the developer-tool weight.
 
 | Criterion | Weight |
 |-----------|--------|
@@ -60,7 +60,7 @@ Rationale: Symphony is an operator/developer tool. Trust depends heavily on resp
 
 ### Orchestration Provider Switchboard
 
-- DVF: 4.67. It preserves Agent Zero as an option while keeping Symphony usable with Direct Codex Agents by default.
+- DVF: 4.67. It preserves Agent Zero as an option while keeping MISCONDUCT usable with Direct Codex Agents by default.
 - T1 Subtraction: 4. Two adapters are justified by the stated requirement; extra provider configuration should be avoided.
 - T2 Concept Count: 4. "Orchestration provider" is one new concept, but Direct Codex Agents can be the default.
 - T3 Progressive Disclosure: 5. First-run can start direct; Agent Zero lives in advanced settings or workflow configuration.

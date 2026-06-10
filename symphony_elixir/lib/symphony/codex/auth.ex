@@ -2,7 +2,7 @@ defmodule Symphony.Codex.Auth do
   @moduledoc """
   Sanitized Codex CLI auth/status helper.
 
-  Symphony does not collect or store ChatGPT/Codex OAuth tokens. The Codex CLI owns
+  MISCONDUCT does not collect or store ChatGPT/Codex OAuth tokens. The Codex CLI owns
   its OAuth/session files. This module only detects CLI availability, starts CLI
   login/logout commands when available, and returns redacted status metadata.
   """
@@ -269,7 +269,7 @@ defmodule Symphony.Codex.Auth do
         state: "auth_status_unverified",
         account_label: nil,
         message:
-          "Codex CLI is installed, but Symphony could not verify the CLI session. If you already signed in, click Check connection after restarting the app; otherwise run `codex login`."
+          "Codex CLI is installed, but MISCONDUCT could not verify the CLI session. If you already signed in, click Check connection after restarting the app; otherwise run `codex login`."
       }
   end
 
@@ -343,7 +343,7 @@ defmodule Symphony.Codex.Auth do
         state: "authenticated",
         account_label: extract_account(body),
         message:
-          "Codex CLI session file detected at #{redact_path(path)}. Tokens remain owned by Codex CLI and are not exposed to Symphony."
+          "Codex CLI session file detected at #{redact_path(path)}. Tokens remain owned by Codex CLI and are not exposed to MISCONDUCT."
       }
     else
       nil

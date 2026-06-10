@@ -246,7 +246,7 @@ fn backend_command(source: &BackendSource) -> Command {
 fn app_log_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join("symphony-backend.log"))
+    Ok(dir.join("misconduct-backend.log"))
 }
 
 fn append_log(path: &Path, line: &str) {
@@ -335,7 +335,7 @@ fn ensure_backend_ready(
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
     let workflow_path = app_data_dir.join("WORKFLOW.md");
-    let workspace_root = app_data_dir.join("symphony_workspaces");
+    let workspace_root = app_data_dir.join("misconduct_workspaces");
     fs::create_dir_all(&workspace_root).map_err(|e| e.to_string())?;
     let agent_profiles_path = app_data_dir.join("agent_profiles.json");
     let log_path = app_log_path(&app)?;
@@ -527,7 +527,7 @@ fn main() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("error while building Symphony Console");
+        .expect("error while building MISCONDUCT");
 
     app.run(|app_handle, event| {
         if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {

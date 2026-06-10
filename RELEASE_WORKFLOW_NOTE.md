@@ -4,9 +4,8 @@ The desktop release workflow is active at `.github/workflows/release-desktop.yml
 
 It builds:
 
-- macOS universal DMG
+- macOS arm64 DMG
 - Windows x86_64 NSIS installer
 - Linux x86_64 AppImage/DEB
-- Linux ARM64 AppImage/DEB
 
-Push tag `v0.1.14` or run the workflow manually from GitHub Actions to produce release artifacts.
+Push a release tag such as `v0.1.16` or run the workflow manually from GitHub Actions to produce MISCONDUCT release artifacts.

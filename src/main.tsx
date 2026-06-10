@@ -1241,7 +1241,7 @@ function joinApiUrl(base: string, path: string) {
 function providerLabel(provider?: string) {
   if (provider === 'agent_zero') return 'Agent Zero';
   if (provider === 'direct_codex') return 'Direct Codex';
-  return 'Symphony';
+  return 'MISCONDUCT';
 }
 
 function authPhaseLabel(phase?: string) {
@@ -1520,8 +1520,8 @@ function App() {
         <div className="brandLockup">
           <div className="brandMark"><Music2 size={20} /></div>
           <div>
-            <strong>Symphony</strong>
-            <span>Conductor Console</span>
+            <strong>MISCONDUCT</strong>
+            <span>Conductor Runtime</span>
           </div>
         </div>
         <nav className="tabs" aria-label="Primary">
@@ -1769,7 +1769,7 @@ function StartupBanner() {
   return (
     <div className="banner startupBanner pixelPanel">
       <Server size={18} />
-      <span>Starting the managed Symphony backend for this desktop window. API reads and agent actions will enable when the local runtime is healthy.</span>
+      <span>Starting the managed MISCONDUCT backend for this desktop window. API reads and agent actions will enable when the local runtime is healthy.</span>
     </div>
   );
 }
@@ -2603,7 +2603,7 @@ function WorkflowPanel({
   const [templateId, setTemplateId] = useState('blank');
   const [targetPath, setTargetPath] = useState('generated-workflow/WORKFLOW.md');
   const [overwrite, setOverwrite] = useState(false);
-  const [name, setName] = useState('symphony-orchestra-workflow');
+  const [name, setName] = useState('misconduct-orchestra-workflow');
   const [objective, setObjective] = useState('Coordinate real work through generator, builder, judge, and refiner phases.');
   const [generatorProfileId, setGeneratorProfileId] = useState('');
   const [builderProfileId, setBuilderProfileId] = useState('');
@@ -3103,7 +3103,7 @@ function SettingsPanel({
         <div>
           <p className="eyebrow">Runtime connection</p>
           <h2><Settings size={20} /> Settings</h2>
-          <p className="subtle">Packaged desktop builds talk to the local Symphony backend at <code>127.0.0.1:4004</code>. Dev builds can leave this blank for the Vite proxy.</p>
+          <p className="subtle">Packaged desktop builds talk to the local MISCONDUCT backend at <code>127.0.0.1:4004</code>. Dev builds can leave this blank for the Vite proxy.</p>
         </div>
         <span className={`pill ${codexConnected ? 'active' : 'neutral'}`}><BrainCircuit size={14} /> {codexStatus}</span>
       </div>
@@ -3112,7 +3112,7 @@ function SettingsPanel({
         <div className="panelHeader">
           <div>
             <p className="eyebrow">Managed local runtime</p>
-            <h2><Server size={20} /> Bundled Symphony backend</h2>
+            <h2><Server size={20} /> Bundled MISCONDUCT backend</h2>
           </div>
           <span className={`pill ${backendRuntime?.healthy ? 'active' : 'neutral'}`}>{backendRuntime?.healthy ? 'Backend ready' : backendBusy ? 'Starting…' : 'Backend manager'}</span>
         </div>
@@ -3142,7 +3142,7 @@ function SettingsPanel({
         {backendLogs?.text && <pre className="backendLogBox">{backendLogs.text}</pre>}
         <details className="advancedBackendSettings">
           <summary>Advanced: override API base URL</summary>
-          <label htmlFor="apiBase">Symphony API base URL</label>
+          <label htmlFor="apiBase">MISCONDUCT API base URL</label>
           <div className="settingsRow">
             <input id="apiBase" value={v} onChange={e => setV(e.target.value)} placeholder="Leave blank to use bundled backend" />
             <button className="button primary" onClick={() => saveBase(v)}>Save override</button>
@@ -3176,7 +3176,7 @@ function SettingsPanel({
           </div>
           <span className={`pill ${codexConnected ? 'active' : codexAvailable ? 'neutral' : 'danger'}`}>{codexStatus}</span>
         </div>
-        <p className="subtle">Symphony uses the local Codex CLI OAuth/session. Tokens stay owned by the Codex CLI; Symphony only checks sanitized status and asks the CLI to start login/logout.</p>
+        <p className="subtle">MISCONDUCT uses the local Codex CLI OAuth/session. Tokens stay owned by the Codex CLI; MISCONDUCT only checks sanitized status and asks the CLI to start login/logout.</p>
         <div className="codexStatusGrid">
           <div><span>CLI available</span><b>{codexAvailable ? 'yes' : 'no'}</b></div>
           <div><span>Authenticated</span><b>{codexConnected ? 'yes' : 'no'}</b></div>
@@ -3192,7 +3192,7 @@ function SettingsPanel({
           <button className="button secondary" disabled={codexBusy} onClick={onCheckCodex}><RefreshCw size={15} /> Check connection</button>
           <button className="button danger" disabled={codexBusy} onClick={onLogoutCodex}>Disconnect</button>
         </div>
-        <p className="subtle">After connecting, create Agent profiles and Symphony will launch real Codex-backed workers using your local Codex Pro session.</p>
+        <p className="subtle">After connecting, create Agent profiles and MISCONDUCT will launch real Codex-backed workers using your local Codex Pro session.</p>
       </div>
     </section>
   );

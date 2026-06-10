@@ -1,4 +1,4 @@
-# Symphony Orchestration Confidence - Divergence Options
+# MISCONDUCT Orchestration Confidence - Divergence Options
 
 ## HMW Question
 
@@ -48,7 +48,7 @@ How might we give operators confidence that complex agent work is connected, aut
 
 ### Option 6: Backend-Owned Hall
 
-**Core idea**: A user opens one local Symphony service and never has to reason about whether the Tauri shell, Vite proxy, API base override, bundled backend, or Elixir service owns the truth.
+**Core idea**: A user opens one local MISCONDUCT service and never has to reason about whether the Tauri shell, Vite proxy, API base override, bundled backend, or Elixir service owns the truth.
 **Key mechanism**: Eliminate the two-runtime ambiguity by making the backend the single owner of health, static UI serving, API base, contract generation, and packaged runtime startup.
 **Key assumption**: Many connection failures come from split ownership between desktop shell, frontend runtime, and backend runtime rather than the orchestration algorithm itself.
 **SCAMPER origin**: Eliminate
@@ -56,7 +56,7 @@ How might we give operators confidence that complex agent work is connected, aut
 
 ### Option 7: Agent Audition Registry
 
-**Core idea**: A user sees available agents audition into the orchestra with live capability, auth, model, workspace, and heartbeat facts before Symphony assigns them real work.
+**Core idea**: A user sees available agents audition into the orchestra with live capability, auth, model, workspace, and heartbeat facts before MISCONDUCT assigns them real work.
 **Key mechanism**: Reverse assignment flow so worker processes or Codex sessions register themselves, renew leases, declare capabilities, and are selected by the orchestrator based on measured availability.
 **Key assumption**: Agent creation and assignment are questionable because configured profiles are not the same thing as live, runnable workers.
 **SCAMPER origin**: Reverse
@@ -91,8 +91,8 @@ How might we give operators confidence that complex agent work is connected, aut
 ### Option 11: Orchestration Provider Switchboard
 
 **Core idea**: A user can start with Direct Codex Agents by default, optionally switch to Agent Zero orchestration, and still see the same issue lifecycle, Judge/Refiner gates, auth status, and run evidence in either mode.
-**Key mechanism**: Add a provider interface with two first-class adapters: the default adapter launches and tracks Codex Agents directly through Symphony, while the Agent Zero adapter delegates orchestration to Agent Zero.
-**Key assumption**: Agent Zero is valuable for users who already want its orchestration layer, but Symphony should remain useful without requiring Agent Zero as a dependency.
+**Key mechanism**: Add a provider interface with two first-class adapters: the default adapter launches and tracks Codex Agents directly through MISCONDUCT, while the Agent Zero adapter delegates orchestration to Agent Zero.
+**Key assumption**: Agent Zero is valuable for users who already want its orchestration layer, but MISCONDUCT should remain useful without requiring Agent Zero as a dependency.
 **SCAMPER origin**: Crazy 8s supplement
 **Closest competitor**: LangGraph provider adapters
 
@@ -154,8 +154,8 @@ Diversity test:
 ### Option 4: Orchestration Provider Switchboard
 
 **Core idea**: A user can start with Direct Codex Agents by default, optionally switch to Agent Zero orchestration, and still see the same issue lifecycle, Judge/Refiner gates, auth status, and run evidence in either mode.
-**Key mechanism**: Add a provider interface with two first-class adapters: the default adapter launches and tracks Codex Agents directly through Symphony, while the Agent Zero adapter delegates orchestration to Agent Zero.
-**Key assumption**: Agent Zero is valuable for users who already want its orchestration layer, but Symphony should remain useful without requiring Agent Zero as a dependency.
+**Key mechanism**: Add a provider interface with two first-class adapters: the default adapter launches and tracks Codex Agents directly through MISCONDUCT, while the Agent Zero adapter delegates orchestration to Agent Zero.
+**Key assumption**: Agent Zero is valuable for users who already want its orchestration layer, but MISCONDUCT should remain useful without requiring Agent Zero as a dependency.
 **SCAMPER origin**: Crazy 8s supplement
 **Closest competitor**: LangGraph provider adapters
 
@@ -166,7 +166,7 @@ Diversity test:
 
 ### Option 5: Backend-Owned Hall
 
-**Core idea**: A user opens one local Symphony service and never has to reason about whether the Tauri shell, Vite proxy, API base override, bundled backend, or Elixir service owns the truth.
+**Core idea**: A user opens one local MISCONDUCT service and never has to reason about whether the Tauri shell, Vite proxy, API base override, bundled backend, or Elixir service owns the truth.
 **Key mechanism**: Eliminate the two-runtime ambiguity by making the backend the single owner of health, static UI serving, API base, contract generation, and packaged runtime startup.
 **Key assumption**: Many connection failures come from split ownership between desktop shell, frontend runtime, and backend runtime rather than the orchestration algorithm itself.
 **SCAMPER origin**: Eliminate

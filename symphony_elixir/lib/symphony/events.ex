@@ -97,7 +97,7 @@ defmodule Symphony.Events do
       sequence: sequence,
       type: value(raw, :type, "event") |> to_string(),
       provider: value(raw, :provider, "direct_codex") |> to_string(),
-      source: value(raw, :source, "symphony") |> to_string(),
+      source: value(raw, :source, "misconduct") |> to_string(),
       occurred_at: now,
       issue_id: value(raw, :issue_id),
       issue_identifier: value(raw, :issue_identifier),

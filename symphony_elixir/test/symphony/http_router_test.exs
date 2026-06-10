@@ -27,7 +27,7 @@ defmodule Symphony.Http.RouterTest do
   test "serves dashboard and operator API endpoints" do
     conn = conn(:get, "/dashboard") |> Symphony.Http.Router.call([])
     assert conn.status == 200
-    assert conn.resp_body =~ "Symphony Dashboard"
+    assert conn.resp_body =~ "MISCONDUCT Dashboard"
 
     conn = conn(:get, "/api/workflow") |> Symphony.Http.Router.call([])
     assert conn.status == 200
@@ -100,7 +100,7 @@ defmodule Symphony.Http.RouterTest do
     body = Jason.decode!(conn.resp_body)
     assert body["accepted"] == true
     assert body["movement"]["identifier"] =~ "MOV-"
-    assert body["movement"]["labels"] == ["manual", "symphony"]
+    assert body["movement"]["labels"] == ["manual", "misconduct"]
     assert body["run"]["title"] == "Rehearse optional tracker workflow"
   end
 
@@ -173,7 +173,7 @@ defmodule Symphony.Http.RouterTest do
     assert conn.status == 200
     generated = Jason.decode!(conn.resp_body)
     assert generated["content"] =~ "# Workflow"
-    assert generated["content"] =~ "Symphony Console default workflow"
+    assert generated["content"] =~ "MISCONDUCT default workflow"
     assert generated["content"] =~ "stage_agents:"
     assert generated["content"] =~ "provider: codex"
     refute generated["content"] =~ "TODO:"

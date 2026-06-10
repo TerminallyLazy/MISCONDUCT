@@ -73,7 +73,7 @@ defmodule Symphony.Config do
        workspace_root:
          expand_path(
            System.get_env("SYMPHONY_WORKSPACE_ROOT") ||
-             resolve_env(getv(ws, "root", Path.join(System.tmp_dir!(), "symphony_workspaces"))),
+             resolve_env(getv(ws, "root", Path.join(System.tmp_dir!(), "misconduct_workspaces"))),
            dir
          ),
        hooks: hk,
@@ -164,7 +164,7 @@ defmodule Symphony.Config do
   defp blank(v), do: if(String.trim(v) == "", do: nil, else: v)
 
   defp expand_path(nil, d),
-    do: Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"), d)
+    do: Path.expand(Path.join(System.tmp_dir!(), "misconduct_workspaces"), d)
 
   defp expand_path(v, d), do: Path.expand(to_string(v), d)
   defp list_or(v, _d) when is_list(v), do: Enum.map(v, &to_string/1)

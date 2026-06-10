@@ -18,7 +18,7 @@ defmodule Symphony.Http.Api do
     json(conn, 200, %{
       ok: true,
       status: health_status(),
-      service: "symphony",
+      service: "misconduct",
       generated_at: DateTime.utc_now(),
       workflow: workflow_metadata()
     })
@@ -372,7 +372,7 @@ defmodule Symphony.Http.Api do
           accepted: true,
           movement: manual_issue_json(issue),
           run: run_card(run),
-          message: "Movement queued for Symphony orchestration."
+          message: "Movement queued for MISCONDUCT orchestration."
         })
 
       {:error, reason} ->
@@ -1053,7 +1053,7 @@ defmodule Symphony.Http.Api do
 
     title =
       string_param(params, "title") || string_param(params, "objective") ||
-        "Manual Symphony movement"
+        "Manual MISCONDUCT movement"
 
     identifier = manual_identifier(params, title)
     description = string_param(params, "description") || string_param(params, "objective") || ""
@@ -1065,7 +1065,7 @@ defmodule Symphony.Http.Api do
       description: description,
       state: string_param(params, "state") || "Manual",
       priority: string_param(params, "priority"),
-      labels: Enum.uniq(["manual", "symphony"] ++ list_param(params, "labels")),
+      labels: Enum.uniq(["manual", "misconduct"] ++ list_param(params, "labels")),
       created_at: now,
       updated_at: now
     }

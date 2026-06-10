@@ -1,6 +1,6 @@
 {
-  "name": "symphony-desktop",
-  "version": "0.1.15",
+  "name": "misconduct-desktop",
+  "version": "0.1.16",
   "private": true,
   "type": "module",
   "scripts": {

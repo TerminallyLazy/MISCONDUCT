@@ -18,7 +18,7 @@ defmodule Symphony.Workspace.Manager do
   def handle_call({:create, identifier, %Config{} = config}, _from, state) do
     root =
       Path.expand(
-        config.workspace_root || state.root || Path.join(System.tmp_dir!(), "symphony_workspaces")
+        config.workspace_root || state.root || Path.join(System.tmp_dir!(), "misconduct_workspaces")
       )
 
     key = SafePath.sanitize_segment(identifier)
@@ -50,7 +50,7 @@ defmodule Symphony.Workspace.Manager do
   def handle_call({:remove, identifier, %Config{} = config}, _from, state) do
     root =
       Path.expand(
-        config.workspace_root || state.root || Path.join(System.tmp_dir!(), "symphony_workspaces")
+        config.workspace_root || state.root || Path.join(System.tmp_dir!(), "misconduct_workspaces")
       )
 
     key = SafePath.sanitize_segment(identifier)

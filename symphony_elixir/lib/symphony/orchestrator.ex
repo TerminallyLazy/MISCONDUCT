@@ -748,8 +748,8 @@ defmodule Symphony.Orchestrator do
     }
   end
 
-  defp blank_prompt(""), do: "You are working on a Symphony movement."
-  defp blank_prompt(nil), do: "You are working on a Symphony movement."
+  defp blank_prompt(""), do: "You are working on a MISCONDUCT movement."
+  defp blank_prompt(nil), do: "You are working on a MISCONDUCT movement."
   defp blank_prompt(p), do: p
 
   defp initial_phase(config) do
@@ -782,7 +782,7 @@ defmodule Symphony.Orchestrator do
 
     {:ok,
      [
-       "You are #{agent_name(agent_profile)}, the Workflow Conductor for Symphony.",
+       "You are #{agent_name(agent_profile)}, the Workflow Conductor for MISCONDUCT.",
        "Conduct this operator movement into a bounded score before any Builder starts coding.",
        "",
        "Movement identifier: #{issue.identifier || issue.id}",
@@ -938,9 +938,9 @@ defmodule Symphony.Orchestrator do
          "Conductor score:",
          score || "No Conductor score was available.",
          "",
-         "You are #{agent_name(agent_profile)}, the Builder agent for Symphony.",
+         "You are #{agent_name(agent_profile)}, the Builder agent for MISCONDUCT.",
          "Execute the bounded score in the real workspace. Keep changes scoped and leave concrete evidence for the Judge.",
-         "When complete, stop. Symphony will hand the workspace to the Judge."
+         "When complete, stop. MISCONDUCT will hand the workspace to the Judge."
        ]
        |> Enum.join("\n")}
     end
@@ -955,7 +955,7 @@ defmodule Symphony.Orchestrator do
 
     {:ok,
      [
-       "You are #{agent_name(agent_profile)}, the Judge agent for Symphony.",
+       "You are #{agent_name(agent_profile)}, the Judge agent for MISCONDUCT.",
        "Inspect the real workspace and judge the Builder output before completion.",
        "",
        "Issue identifier: #{build_run.issue_identifier || build_run.issue_id}",
@@ -994,7 +994,7 @@ defmodule Symphony.Orchestrator do
 
     {:ok,
      [
-       "You are #{agent_name(agent_profile)}, the Refiner agent for Symphony.",
+       "You are #{agent_name(agent_profile)}, the Refiner agent for MISCONDUCT.",
        "Address the Judge findings using the same issue workspace. Keep the scope bounded to the requested issue and Judge findings.",
        "",
        "Issue identifier: #{run.issue_identifier || run.issue_id}",
@@ -1012,7 +1012,7 @@ defmodule Symphony.Orchestrator do
        format_findings(map_get(verdict, "findings", [])),
        "",
        "Use only real workspace evidence and commands. Do not invent test output, broaden the issue, or mark the issue complete.",
-       "When your refinement is done, stop. Symphony will run the Judge again."
+       "When your refinement is done, stop. MISCONDUCT will run the Judge again."
      ]
      |> Enum.reject(&(&1 == nil))
      |> Enum.join("\n")}

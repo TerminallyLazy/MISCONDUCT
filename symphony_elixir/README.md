@@ -1,21 +1,14 @@
-# SymphonyElixir
+# MISCONDUCT Backend
 
-**TODO: Add description**
+Local Elixir backend for the MISCONDUCT desktop app. It owns workflow loading,
+agent orchestration, safe workspace paths, Codex auth/status checks, and the
+operator HTTP API consumed by the Tauri frontend.
 
 ## Installation
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `symphony_elixir` to your list of dependencies in `mix.exs`:
+The OTP app is still named `symphony_elixir` internally. Build and test it from
+this directory:
 
-```elixir
-def deps do
-  [
-    {:symphony_elixir, "~> 0.1.0"}
-  ]
-end
+```bash
+mix test
 ```
-
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/symphony_elixir>.
-

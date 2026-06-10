@@ -1,7 +1,7 @@
 {
-  "productName": "Symphony Console",
-  "version": "0.1.15",
-  "identifier": "dev.symphony.console",
+  "productName": "MISCONDUCT",
+  "version": "0.1.16",
+  "identifier": "dev.misconduct.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "Symphony Console",
+        "title": "MISCONDUCT",
         "width": 1480,
         "height": 960,
         "minWidth": 1180,

@@ -1,18 +1,18 @@
-# Misconducting / Symphony Console
+# MISCONDUCT
 
-A pixel-art orchestral conductor console for coordinating manual Symphony movements, optional Linear issues, Codex-backed agents, workflow files, agent profiles, and live task state.
+MISCONDUCT is a desktop orchestration app for coordinating manual movements, optional Linear issues, Codex-backed agents, workflow files, agent profiles, and live task state.
 
 ## Desktop downloads
 
 Download packaged builds from GitHub Releases:
 
-https://github.com/TerminallyLazy/misconducting/releases/latest
+https://github.com/TerminallyLazy/MISCONDUCT/releases/latest
 
-Current app metadata in this checkout is `0.1.15`. The public latest release page may
-still show older assets until tag `v0.1.15` is pushed and the desktop release workflow
+Current app metadata in this checkout is `0.1.16`. The public latest release page may
+still show older assets until tag `v0.1.16` is pushed and the desktop release workflow
 publishes new artifacts.
 
-The GitHub Actions workflow `.github/workflows/release-desktop.yml` is configured to build macOS, Windows, Linux x86_64, and Linux ARM64 packages from release tags.
+The GitHub Actions workflow `.github/workflows/release-desktop.yml` is configured to build macOS arm64, Windows x86_64, and Linux x86_64 packages from release tags.
 
 ## Development
 
@@ -24,7 +24,7 @@ npm run build
 npm run tauri:build
 ```
 
-`npm run tauri:build` builds and stages the Elixir Mix release into `src-tauri/resources/symphony_backend` before Tauri packages the desktop app.
+`npm run tauri:build` builds and stages the Elixir Mix release into `src-tauri/resources/symphony_backend` before Tauri packages the MISCONDUCT desktop app.
 
 Backend source lives in `symphony_elixir/`.
 
@@ -35,10 +35,10 @@ mix test
 
 ## Codex auth model
 
-Symphony uses the Codex CLI as the OAuth/session owner for ChatGPT/Codex Pro. The app exposes sanitized status and login/check/logout controls; it does not ask users to paste OAuth tokens.
+MISCONDUCT uses the Codex CLI as the OAuth/session owner for ChatGPT/Codex Pro. The app exposes sanitized status and login/check/logout controls; it does not ask users to paste OAuth tokens.
 
 ## Release automation note
 
-The cross-platform GitHub Actions workflow is now included at `.github/workflows/release-desktop.yml`. It builds downloadable macOS, Windows, Linux x86_64, and Linux ARM64 desktop artifacts from release tags.
+The cross-platform GitHub Actions workflow is now included at `.github/workflows/release-desktop.yml`. It builds downloadable macOS arm64, Windows x86_64, and Linux x86_64 desktop artifacts from release tags.
 
 Current downloadable assets are published on the GitHub Release page.

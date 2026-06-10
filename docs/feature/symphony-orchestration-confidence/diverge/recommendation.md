@@ -1,4 +1,4 @@
-# Symphony Orchestration Confidence - Recommendation
+# MISCONDUCT Orchestration Confidence - Recommendation
 
 ## Top 3 Options
 
@@ -20,7 +20,7 @@
 
 **Why it scores well**: It satisfies the requirement that Agent Zero orchestration is available while Direct Codex Agents remains the default path for users who do not want Agent Zero.
 **Core trade-off**: It adds an adapter boundary and provider status model before all provider-specific behavior is known.
-**Key risk**: Agent Zero must be optional and late-disclosed; if users must understand it before using Symphony, the design loses taste quickly.
+**Key risk**: Agent Zero must be optional and late-disclosed; if users must understand it before using MISCONDUCT, the design loses taste quickly.
 **Hire criteria**: Choose this when the product must support multiple orchestration backends without fragmenting the UI or workflow model.
 
 ## Recommendation

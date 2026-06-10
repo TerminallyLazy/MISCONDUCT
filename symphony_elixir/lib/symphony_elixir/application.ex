@@ -44,7 +44,7 @@ defmodule SymphonyElixir.Application do
         content
 
       {:error, _reason} ->
-        "---\ntracker:\n  kind: none\nworkspace:\n  root: ./symphony_workspaces\nserver:\n  port: 4004\n---\nYou are working on Symphony movement {{ issue.identifier }}: {{ issue.title }}. Attempt: {{ attempt }}.\n"
+        "---\ntracker:\n  kind: none\nworkspace:\n  root: ./misconduct_workspaces\nserver:\n  port: 4004\n---\nYou are working on MISCONDUCT movement {{ issue.identifier }}: {{ issue.title }}. Attempt: {{ attempt }}.\n"
     end
   end
 end
