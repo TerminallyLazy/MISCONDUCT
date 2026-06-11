@@ -2,8 +2,8 @@ defmodule Symphony.AgentRunner.Codex do
   @behaviour Symphony.AgentRunner
   @codex_exec_args [
     "exec",
-    "--ask-for-approval",
-    "never",
+    "-c",
+    "approval_policy=\"never\"",
     "--sandbox",
     "workspace-write",
     "--skip-git-repo-check",

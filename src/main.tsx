@@ -1261,6 +1261,73 @@ function providerLabel(provider?: string) {
   return 'MISCONDUCT';
 }
 
+function phaseAgentLabel(stage?: string) {
+  const value = String(stage || '').toLowerCase();
+  if (value === 'conductor') return 'Conductor';
+  if (value === 'build' || value === 'builder') return 'Builder';
+  if (value === 'judge' || value === 'review') return 'Judge';
+  if (value === 'refiner' || value === 'refine') return 'Refiner';
+  if (value === 'retry') return 'Stage Manager';
+  return 'MISCONDUCT';
+}
+
+function eventAgentName(event: OrchestrationEvent) {
+  const data = event.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return '';
+  const profile = data.agent_profile;
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return '';
+  return stringField(profile as Record<string, unknown>, 'name');
+}
+
+function eventSpeaker(event: OrchestrationEvent) {
+  const type = String(event.type || '').toLowerCase();
+  const action = String(event.action || '').toLowerCase();
+  const agentName = eventAgentName(event);
+
+  if (type.includes('operator')) return 'Operator';
+  if (type.includes('retry')) return 'Stage Manager';
+  if (type === 'agent.event' && (action === 'stdout' || action === 'turn_completed')) {
+    return agentName || phaseAgentLabel(event.stage);
+  }
+  if (type === 'agent.event' && (action === 'stderr' || action === 'turn_failed' || action === 'session_started')) {
+    return 'Codex Runner';
+  }
+  if (agentName) return agentName;
+  if (event.stage) return phaseAgentLabel(event.stage);
+  return providerLabel(event.provider);
+}
+
+function eventReadableType(event: OrchestrationEvent) {
+  const type = String(event.type || '').toLowerCase();
+  const action = String(event.action || '').toLowerCase();
+
+  if (type === 'operator.issue.action.accepted') return 'Operator accepted action';
+  if (type === 'issue.stage.started') return `${phaseAgentLabel(event.stage)} started`;
+  if (type === 'issue.stage.completed') return `${phaseAgentLabel(event.stage)} completed`;
+  if (type === 'issue.stage.blocked') return `${phaseAgentLabel(event.stage)} blocked`;
+  if (type === 'issue.score.ready') return 'Conductor score ready';
+  if (type === 'issue.judge.verdict') return 'Judge verdict';
+  if (type === 'issue.execution.completed') return 'Movement completed';
+  if (type === 'issue.execution.failed') return 'Movement failed';
+  if (type === 'issue.retry.scheduled') return 'Retry scheduled';
+  if (type === 'agent.event' && action === 'session_started') return 'Subprocess started';
+  if (type === 'agent.event' && action === 'stdout') return 'Agent output';
+  if (type === 'agent.event' && action === 'stderr') return 'Runner output';
+  if (type === 'agent.event' && action === 'turn_completed') return 'Turn completed';
+  if (type === 'agent.event' && action === 'turn_failed') return 'Turn failed';
+  return event.type || 'Event';
+}
+
+function eventTone(event: OrchestrationEvent) {
+  const combined = `${event.status || ''} ${event.type || ''} ${event.action || ''}`.toLowerCase();
+  if (combined.match(/fail|error|stderr|block|reject/)) return 'danger';
+  if (combined.match(/retry|refin|attention/)) return 'warning';
+  if (combined.match(/judge|review|verdict/)) return 'review';
+  if (combined.match(/complete|pass|approved|ready/)) return 'success';
+  if (combined.match(/start|running|accepted/)) return 'active';
+  return 'neutral';
+}
+
 function authPhaseLabel(phase?: string) {
   const normalized = String(phase || '').replace(/_/g, ' ');
   if (!normalized) return 'auth phase unknown';
@@ -2383,8 +2450,7 @@ function MovementEvents({ card, debugPayload, liveEvents }: { card: Card; debugP
       const ids = [event.issue_id, event.issue_identifier].filter(Boolean);
       return ids.includes(card.backendId) || ids.includes(card.identifier);
     })
-    .slice(-18)
-    .reverse();
+    .slice(-24);
   const events = [
     ['Movement', card.movement],
     ['Status', card.status],
@@ -2400,10 +2466,38 @@ function MovementEvents({ card, debugPayload, liveEvents }: { card: Card; debugP
     <div className="movementTimeline">
       {events.map(([label, value]) => <div className="timelineRow" key={label}><b>{label}</b><span>{value}</span></div>)}
       <div className="liveMovementLedger">
-        <h3>Live pit ledger</h3>
-        {movementEvents.length ? movementEvents.map(event => <EventRow event={event} key={event.id} />) : <p className="subtle">No live events for this movement yet.</p>}
+        <h3>Agent conversation</h3>
+        {movementEvents.length ? <EventConversation events={movementEvents} /> : <p className="subtle">No live events for this movement yet.</p>}
       </div>
       {debugPayload && <pre className="debugPanel inline">{debugPayload}</pre>}
+    </div>
+  );
+}
+
+function EventConversation({ events }: { events: OrchestrationEvent[] }) {
+  return (
+    <div className="eventConversation" aria-label="Movement agent conversation">
+      {events.map(event => <EventBubble event={event} key={event.id} />)}
+    </div>
+  );
+}
+
+function EventBubble({ event }: { event: OrchestrationEvent }) {
+  const speaker = eventSpeaker(event);
+  const own = speaker === 'Operator' || speaker === 'Conductor' || speaker === 'Workflow Conductor';
+  const tone = eventTone(event);
+  const message = event.message || event.action || 'Event received';
+
+  return (
+    <div className={`eventBubbleRow ${own ? 'own' : ''}`}>
+      <div className={`agentBubble ${tone}`}>
+        <div className="speechMeta">
+          <b>{speaker}</b>
+          <span>{formatEventTime(event.occurred_at)}</span>
+        </div>
+        <p>{message}</p>
+        <small>{eventReadableType(event)} · {providerLabel(event.provider)}</small>
+      </div>
     </div>
   );
 }
@@ -3080,9 +3174,9 @@ function EventRow({ event }: { event: OrchestrationEvent }) {
   return (
     <div className="eventRow">
       <div className="eventMain">
-        <span className={`eventDot ${statusClass(event.status || event.type)}`} />
+        <span className={`eventDot ${eventTone(event)}`} />
         <div>
-          <b>{event.type}</b>
+          <b>{eventReadableType(event)}</b>
           <small>{providerLabel(event.provider)} · {event.stage || 'system'} · {formatEventTime(event.occurred_at)}</small>
         </div>
       </div>
