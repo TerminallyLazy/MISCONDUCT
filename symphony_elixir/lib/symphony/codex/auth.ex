@@ -8,6 +8,15 @@ defmodule Symphony.Codex.Auth do
   """
 
   @default_timeout 8_000
+  @runtime_subcommands [
+    "app-server",
+    "exec",
+    "e",
+    "review",
+    "mcp-server",
+    "exec-server",
+    "remote-control"
+  ]
 
   def status(config \\ nil) do
     command = codex_command(config)
@@ -220,8 +229,8 @@ defmodule Symphony.Codex.Auth do
   end
 
   defp global_args(args) do
-    case Enum.split_while(args, &(&1 != "app-server")) do
-      {global, ["app-server" | _runtime_args]} -> global
+    case Enum.split_while(args, &(&1 not in @runtime_subcommands)) do
+      {global, [_subcommand | _runtime_args]} -> global
       {global, []} -> global
     end
   end

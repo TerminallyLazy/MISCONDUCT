@@ -174,6 +174,39 @@ defmodule Symphony.Codex.AuthTest do
     refute calls =~ "--port 4700"
   end
 
+  test "status preserves global flags and strips exec runtime args", %{dir: dir} do
+    bin_dir = Path.join(dir, "Codex CLI")
+    File.mkdir_p!(bin_dir)
+    calls_path = Path.join(dir, "calls.txt")
+
+    cli =
+      write_cli!(bin_dir, "codex-profile", """
+      #!/bin/sh
+      printf "%s\\n" "$*" >> "#{calls_path}"
+      if [ "$1" = "--profile" ] && [ "$2" = "work" ] && [ "$3" = "--version" ]; then
+        echo "codex-cli 9.9.9"
+        exit 0
+      fi
+      if [ "$1" = "--profile" ] && [ "$2" = "work" ] && [ "$3" = "login" ] && [ "$4" = "status" ]; then
+        echo "Logged in using ChatGPT"
+        exit 0
+      fi
+      exit 1
+      """)
+
+    command = "'#{cli}' --profile work exec --skip-git-repo-check --color never"
+    status = Auth.status(%Config{codex_command: command})
+
+    assert status.available == true
+    assert status.authenticated == true
+
+    calls = File.read!(calls_path)
+    assert calls =~ "--profile work --version"
+    assert calls =~ "--profile work login status"
+    refute calls =~ "exec"
+    refute calls =~ "--skip-git-repo-check"
+  end
+
   test "login start preserves global flags and strips app-server runtime args", %{dir: dir} do
     bin_dir = Path.join(dir, "Codex CLI")
     File.mkdir_p!(bin_dir)

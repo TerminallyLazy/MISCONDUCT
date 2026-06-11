@@ -4,6 +4,8 @@ defmodule Symphony.Linear.Issue do
             identifier: nil,
             title: nil,
             description: nil,
+            workspace_path: nil,
+            repository_path: nil,
             priority: nil,
             state: nil,
             branch_name: nil,

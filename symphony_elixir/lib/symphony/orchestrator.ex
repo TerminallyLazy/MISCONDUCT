@@ -3,6 +3,7 @@ defmodule Symphony.Orchestrator do
   alias Symphony.{Run, Prompt}
   alias Symphony.Orchestrator.State
   alias Symphony.Workspace.Manager
+  alias Symphony.Filesystem.SafePath
 
   @judge_verdict_relative_path ".symphony/judge-verdict.json"
   @conductor_score_relative_path ".symphony/conductor-score.md"
@@ -330,7 +331,7 @@ defmodule Symphony.Orchestrator do
          {:ok, agent_profile} <- assigned_agent_profile(state.config, role),
          {:ok, agent_profile} <-
            maybe_require_agent_profile(state.config, role, agent_profile),
-         {:ok, ws} <- Manager.create_for_issue(issue.identifier, state.config),
+         {:ok, ws} <- workspace_for_issue(issue, state.config),
          :ok <-
            Symphony.Hooks.Executor.run(
              get_in(state.config.hooks, ["before_run"]),
@@ -677,11 +678,18 @@ defmodule Symphony.Orchestrator do
              identifier: run.issue_identifier || run.issue_id || id,
              title: Map.get(issue, :title) || Map.get(issue, "title"),
              description: Map.get(issue, :description) || Map.get(issue, "description"),
+             workspace_path: Map.get(issue, :workspace_path) || Map.get(issue, "workspace_path"),
+             repository_path:
+               Map.get(issue, :repository_path) || Map.get(issue, "repository_path"),
              state: Map.get(issue, :state) || Map.get(issue, "state"),
              labels: Map.get(issue, :labels) || Map.get(issue, "labels") || []
            }, run.attempt || 0,
            %{
              phase: run.phase,
+             workspace_path: run.workspace_path,
+             workspace_target:
+               Map.get(issue, :workspace_path) || Map.get(issue, "workspace_path") ||
+                 Map.get(issue, :repository_path) || Map.get(issue, "repository_path"),
              agent_profile: run.agent_profile,
              score_path: run.score_path,
              score_summary: run.score_summary,
@@ -714,6 +722,16 @@ defmodule Symphony.Orchestrator do
       title: metadata[:title] || Map.get(issue, :title) || Map.get(issue, "title"),
       description:
         metadata[:description] || Map.get(issue, :description) || Map.get(issue, "description"),
+      workspace_path:
+        metadata[:workspace_path] || Map.get(issue, :workspace_path) ||
+          Map.get(issue, "workspace_path"),
+      workspace_target:
+        metadata[:workspace_target] || Map.get(issue, :workspace_path) ||
+          Map.get(issue, "workspace_path") || Map.get(issue, :repository_path) ||
+          Map.get(issue, "repository_path"),
+      repository_path:
+        metadata[:repository_path] || Map.get(issue, :repository_path) ||
+          Map.get(issue, "repository_path"),
       labels: metadata[:labels] || Map.get(issue, :labels) || Map.get(issue, "labels") || [],
       attempt: next,
       due_at: DateTime.add(DateTime.utc_now(), delay, :millisecond),
@@ -769,10 +787,22 @@ defmodule Symphony.Orchestrator do
   defp initial_prompt(config, issue, attempt, "conductor", agent_profile, workspace_path),
     do: conductor_prompt(config, issue, attempt, agent_profile, workspace_path)
 
-  defp initial_prompt(config, issue, attempt, "build", agent_profile, _workspace_path) do
-    Prompt.render(blank_prompt(config.workflow.prompt_template), issue, attempt, %{
-      agent: agent_profile || %{}
-    })
+  defp initial_prompt(config, issue, attempt, "build", agent_profile, workspace_path) do
+    with {:ok, base_prompt} <-
+           Prompt.render(blank_prompt(config.workflow.prompt_template), issue, attempt, %{
+             agent: agent_profile || %{}
+           }) do
+      {:ok,
+       [
+         base_prompt,
+         "",
+         "Target workspace path:",
+         workspace_path,
+         "",
+         "Run commands and edit files in this workspace only unless the operator explicitly provided additional scope."
+       ]
+       |> Enum.join("\n")}
+    end
   end
 
   defp conductor_prompt(config, issue, attempt, agent_profile, workspace_path) do
@@ -789,6 +819,7 @@ defmodule Symphony.Orchestrator do
        "Movement title: #{issue_title(issue)}",
        "Movement state: #{Map.get(issue, :state) || "Manual"}",
        "Attempt number: #{attempt || 0}",
+       "Target workspace path: #{workspace_path}",
        "",
        "Movement brief:",
        Map.get(issue, :description) || "No score brief was provided.",
@@ -937,6 +968,9 @@ defmodule Symphony.Orchestrator do
          "",
          "Conductor score:",
          score || "No Conductor score was available.",
+         "",
+         "Target workspace path:",
+         run.workspace_path,
          "",
          "You are #{agent_name(agent_profile)}, the Builder agent for MISCONDUCT.",
          "Execute the bounded score in the real workspace. Keep changes scoped and leave concrete evidence for the Judge.",
@@ -1351,6 +1385,38 @@ defmodule Symphony.Orchestrator do
   end
 
   defp prepare_phase_artifacts(_run), do: :ok
+
+  defp workspace_for_issue(issue, config) do
+    case issue_workspace_path(issue) do
+      nil ->
+        Manager.create_for_issue(issue.identifier, config)
+
+      path ->
+        path = Path.expand(path)
+
+        cond do
+          not File.dir?(path) ->
+            {:error, :workspace_path_missing,
+             "Target workspace path does not exist or is not a directory: #{path}"}
+
+          true ->
+            with :ok <- SafePath.reject_symlink(path) do
+              {:ok,
+               %Symphony.Workspace{
+                 path: path,
+                 workspace_key:
+                   SafePath.sanitize_segment(issue.identifier || Path.basename(path)),
+                 created_now: false
+               }}
+            end
+        end
+    end
+  end
+
+  defp issue_workspace_path(issue) do
+    Map.get(issue, :workspace_path) || Map.get(issue, "workspace_path") ||
+      Map.get(issue, :repository_path) || Map.get(issue, "repository_path")
+  end
 
   defp judge_verdict_path(%{workspace_path: workspace_path}) do
     Path.join(workspace_path || ".", @judge_verdict_relative_path)

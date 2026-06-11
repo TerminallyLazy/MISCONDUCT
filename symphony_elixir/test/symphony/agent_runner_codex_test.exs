@@ -54,6 +54,58 @@ defmodule Symphony.AgentRunner.CodexTest do
     assert File.read!(Path.join(dir, "prompt.txt")) == "PROMPT BODY\n"
   end
 
+  test "runs configured app-server command through noninteractive codex exec" do
+    dir = temp_dir!()
+    cli = Path.join(dir, "fake-codex")
+
+    File.write!(cli, """
+    #!/bin/sh
+    printf '%s\n' "$@" > args.txt
+    cat > prompt.txt
+    """)
+
+    File.chmod!(cli, 0o755)
+
+    run = %Symphony.Run{
+      issue_id: "issue-1",
+      issue_identifier: "MOV-1",
+      prompt: "WRITE THE SCORE\n"
+    }
+
+    config = %Symphony.Config{
+      codex_command: "#{cli} --profile work app-server --port 4700",
+      codex_turn_timeout_ms: 2_000
+    }
+
+    workspace = %Symphony.Workspace{path: dir}
+
+    assert :ok = Codex.run(run, workspace, config, self())
+
+    assert_receive {:agent_event, "issue-1",
+                    %{event: "session_started", message: "Started subprocess: " <> command}}
+
+    assert command =~ "exec"
+    assert command =~ "--skip-git-repo-check"
+    assert_receive {:agent_event, "issue-1", %{event: "turn_completed"}}
+
+    assert File.read!(Path.join(dir, "prompt.txt")) == "WRITE THE SCORE\n"
+
+    assert Path.join(dir, "args.txt")
+           |> File.read!()
+           |> String.split("\n", trim: true) == [
+             "--profile",
+             "work",
+             "exec",
+             "--ask-for-approval",
+             "never",
+             "--sandbox",
+             "workspace-write",
+             "--skip-git-repo-check",
+             "--color",
+             "never"
+           ]
+  end
+
   test "times out long-running command" do
     dir = temp_dir!()
     run = %Symphony.Run{issue_id: "issue-timeout", issue_identifier: "LIN-2", prompt: "x"}

@@ -1,5 +1,15 @@
 defmodule Symphony.AgentRunner.Codex do
   @behaviour Symphony.AgentRunner
+  @codex_exec_args [
+    "exec",
+    "--ask-for-approval",
+    "never",
+    "--sandbox",
+    "workspace-write",
+    "--skip-git-repo-check",
+    "--color",
+    "never"
+  ]
 
   @impl true
   def run(run, workspace, config, orchestrator) do
@@ -11,13 +21,15 @@ defmodule Symphony.AgentRunner.Codex do
       emit(orchestrator, run.issue_id, "startup_failed", %{message: "codex.command is empty"})
       {:error, :missing_codex_command}
     else
+      execution_command = execution_command(command)
+
       emit(orchestrator, run.issue_id, "session_started", %{
-        message: "Started subprocess: #{command}",
+        message: "Started subprocess: #{execution_command}",
         thread_id: run.issue_identifier || run.issue_id,
         turn_id: Integer.to_string(System.unique_integer([:positive]))
       })
 
-      command
+      execution_command
       |> run_command(prompt, workspace.path, config, run)
       |> await_result(timeout_ms, run, orchestrator)
     end
@@ -102,6 +114,8 @@ defmodule Symphony.AgentRunner.Codex do
     Symphony.Codex.Auth.env() ++
       [
         {"SYMPHONY_CODEX_COMMAND", to_string(config.codex_command || "")},
+        {"SYMPHONY_CODEX_EXECUTION_COMMAND",
+         execution_command(to_string(config.codex_command || ""))},
         {"SYMPHONY_ISSUE_ID", to_string(run.issue_id || "")},
         {"SYMPHONY_ISSUE_IDENTIFIER", to_string(run.issue_identifier || "")},
         {"SYMPHONY_WORKSPACE", cwd},
@@ -119,6 +133,32 @@ defmodule Symphony.AgentRunner.Codex do
   defp profile_value(profile, key) do
     value = Map.get(profile, key) || Map.get(profile, Atom.to_string(key))
     to_string(value || "")
+  end
+
+  defp execution_command(command) do
+    command
+    |> command_parts()
+    |> case do
+      [] ->
+        command
+
+      [executable | args] ->
+        case Enum.split_while(args, &(&1 != "app-server")) do
+          {global_args, ["app-server" | _runtime_args]} ->
+            [executable | global_args ++ @codex_exec_args]
+            |> Enum.map(&shell_quote/1)
+            |> Enum.join(" ")
+
+          _ ->
+            command
+        end
+    end
+  end
+
+  defp command_parts(command) do
+    OptionParser.split(command)
+  rescue
+    _ -> String.split(command, ~r/\s+/, trim: true)
   end
 
   defp shell_quote(value), do: "'" <> String.replace(to_string(value), "'", "'\\''") <> "'"

@@ -360,6 +360,8 @@ defmodule Symphony.Http.Api do
       data: %{
         title: issue.title,
         state: issue.state,
+        workspace_path: issue.workspace_path,
+        repository_path: issue.repository_path,
         labels: issue.labels,
         tracker_kind: "manual"
       }
@@ -937,6 +939,8 @@ defmodule Symphony.Http.Api do
       identifier: run.issue_identifier,
       linear_identifier: run.issue_identifier,
       title: Map.get(issue, :title) || run.issue_identifier || run.issue_id,
+      description: Map.get(issue, :description),
+      workspace_target: Map.get(issue, :workspace_path) || Map.get(issue, :repository_path),
       state: Map.get(issue, :state) || "Running",
       status: run.status,
       stage: phase,
@@ -951,6 +955,7 @@ defmodule Symphony.Http.Api do
       instrument_name: agent_profile[:instrument_name],
       agent_profile_status: agent_profile[:status],
       workspace_path: run.workspace_path,
+      repository_path: Map.get(issue, :repository_path),
       session_id: run.session_id,
       last_event: run.last_event,
       last_message: run.last_message,
@@ -1001,6 +1006,7 @@ defmodule Symphony.Http.Api do
       linear_identifier: retry.issue_identifier,
       title: Map.get(retry, :title) || retry.issue_identifier || retry.issue_id,
       description: Map.get(retry, :description),
+      workspace_target: Map.get(retry, :workspace_target),
       state: "Retrying",
       status: "retrying",
       stage: phase,
@@ -1015,6 +1021,8 @@ defmodule Symphony.Http.Api do
       instrument_name: agent_profile[:instrument_name],
       agent_profile_status: agent_profile[:status],
       score_path: Map.get(retry, :score_path),
+      workspace_path: Map.get(retry, :workspace_path),
+      repository_path: Map.get(retry, :repository_path),
       score_summary: Map.get(retry, :score_summary),
       phase_history: Map.get(retry, :phase_history, []),
       conversation: Map.get(retry, :conversation, []),
@@ -1057,12 +1065,15 @@ defmodule Symphony.Http.Api do
 
     identifier = manual_identifier(params, title)
     description = string_param(params, "description") || string_param(params, "objective") || ""
+    workspace_path = movement_workspace_path(params)
 
     %Issue{
       id: string_param(params, "id") || "manual:#{identifier}",
       identifier: identifier,
       title: title,
       description: description,
+      workspace_path: workspace_path,
+      repository_path: workspace_path,
       state: string_param(params, "state") || "Manual",
       priority: string_param(params, "priority"),
       labels: Enum.uniq(["manual", "misconduct"] ++ list_param(params, "labels")),
@@ -1107,12 +1118,21 @@ defmodule Symphony.Http.Api do
       identifier: issue.identifier,
       title: issue.title,
       description: issue.description,
+      workspace_path: issue.workspace_path,
+      repository_path: issue.repository_path,
       state: issue.state,
       priority: issue.priority,
       labels: issue.labels,
       created_at: issue.created_at,
       updated_at: issue.updated_at
     }
+  end
+
+  defp movement_workspace_path(params) do
+    string_param(params, "workspace_path") ||
+      string_param(params, "repository_path") ||
+      string_param(params, "target_path") ||
+      string_param(params, "repo_path")
   end
 
   defp string_param(params, key) do

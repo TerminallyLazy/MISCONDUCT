@@ -72,7 +72,9 @@ const KanbanCardSchema = z.object({
   phase: z.string().optional(),
   operator_status: z.string().optional(),
   operator_summary: z.string().nullable().optional(),
+  workspace_target: z.string().nullable().optional(),
   workspace_path: z.string().nullable().optional(),
+  repository_path: z.string().nullable().optional(),
   session_id: z.string().nullable().optional(),
   last_event: z.string().nullable().optional(),
   last_message: z.string().nullable().optional(),
@@ -259,6 +261,13 @@ type Card = {
   stagePosition?: StagePosition;
   scorePath?: string;
   scoreSummary?: string;
+  workspacePath?: string;
+  workspaceTarget?: string;
+  repositoryPath?: string;
+  verdictPath?: string;
+  judgeVerdict?: unknown;
+  refinerAttempt?: number | null;
+  refinerMaxAttempts?: number | null;
   phaseHistory: PhaseHistoryEntry[];
   conversation: AgentConversationMessage[];
   intensity: number;
@@ -269,6 +278,7 @@ type ManualMovementPayload = {
   title: string;
   description?: string;
   identifier?: string;
+  workspace_path?: string;
 };
 
 const columns = ['Ready', 'In Progress', 'Human Review', 'Retry', 'Blocked', 'Done'];
@@ -846,6 +856,13 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
         stagePosition: profileStagePosition,
         scorePath: stringField(rawRecord, 'score_path'),
         scoreSummary: stringField(rawRecord, 'score_summary'),
+        workspacePath: stringField(rawRecord, 'workspace_path'),
+        workspaceTarget: stringField(rawRecord, 'workspace_target'),
+        repositoryPath: stringField(rawRecord, 'repository_path'),
+        verdictPath: stringField(rawRecord, 'verdict_path'),
+        judgeVerdict: rawRecord.judge_verdict,
+        refinerAttempt: typeof raw.refiner_attempt === 'number' ? raw.refiner_attempt : undefined,
+        refinerMaxAttempts: typeof raw.refiner_max_attempts === 'number' ? raw.refiner_max_attempts : undefined,
         phaseHistory,
         conversation,
         intensity: intensityFor(tokens, turns, priority),
@@ -1585,6 +1602,7 @@ function App() {
               onCreateMovement={payload => createMovement.mutateAsync(payload)}
               movementBusy={createMovement.isPending}
               movementError={createMovement.error instanceof Error ? createMovement.error.message : undefined}
+              liveEvents={orchestrationEvents.events}
             />
           )}
           {tab === 'agents' && (
@@ -1912,7 +1930,8 @@ function OrchestraFloor({
   onAction,
   onCreateMovement,
   movementBusy,
-  movementError
+  movementError,
+  liveEvents
 }: {
   cards: Card[];
   selectedCard?: Card;
@@ -1928,6 +1947,7 @@ function OrchestraFloor({
   onCreateMovement: (payload: ManualMovementPayload) => Promise<unknown>;
   movementBusy: boolean;
   movementError?: string;
+  liveEvents: OrchestrationEvent[];
 }) {
   const counts = Object.fromEntries(
     renderedStations.map(station => [
@@ -1999,6 +2019,7 @@ function OrchestraFloor({
         onCreateMovement={onCreateMovement}
         movementBusy={movementBusy}
         movementError={movementError}
+        liveEvents={liveEvents}
       />
     </div>
   );
@@ -2159,7 +2180,8 @@ function ScoreConsole({
   onAction,
   onCreateMovement,
   movementBusy,
-  movementError
+  movementError,
+  liveEvents
 }: {
   selectedCard?: Card;
   debugPayload: string | null;
@@ -2170,12 +2192,13 @@ function ScoreConsole({
   onCreateMovement: (payload: ManualMovementPayload) => Promise<unknown>;
   movementBusy: boolean;
   movementError?: string;
+  liveEvents: OrchestrationEvent[];
 }) {
-  const [scoreTab, setScoreTab] = useState<'score' | 'events' | 'tools'>('score');
+  const [scoreTab, setScoreTab] = useState<'plan' | 'ledger' | 'controls'>('plan');
   return (
     <aside className="scoreConsole pixelPanel">
       <div className="consoleTabs">
-        {(['score', 'events', 'tools'] as const).map(tab => (
+        {(['plan', 'ledger', 'controls'] as const).map(tab => (
           <button key={tab} className={scoreTab === tab ? 'scoreTabButton active' : 'scoreTabButton'} onClick={() => setScoreTab(tab)}>{tab.toUpperCase()}</button>
         ))}
       </div>
@@ -2186,20 +2209,21 @@ function ScoreConsole({
           <h2>{selectedCard.identifier}</h2>
           <h3>{selectedCard.title}</h3>
           <StatusPill status={selectedCard.status} />
-          {scoreTab === 'score' && <MovementPanel card={selectedCard} />}
-          {scoreTab === 'events' && <MovementEvents card={selectedCard} debugPayload={debugPayload} />}
-          {scoreTab === 'tools' && <MovementTools card={selectedCard} busy={busy} onDebug={onDebug} onMove={onMove} onAction={onAction} />}
+          {scoreTab === 'plan' && <MovementPanel card={selectedCard} />}
+          {scoreTab === 'ledger' && <MovementEvents card={selectedCard} debugPayload={debugPayload} liveEvents={liveEvents} />}
+          {scoreTab === 'controls' && <MovementTools card={selectedCard} busy={busy} onDebug={onDebug} onMove={onMove} onAction={onAction} />}
         </div>
       ) : (
         <div className="selectedScore empty"><h2>No movement selected</h2><p>The orchestra is waiting for a movement.</p></div>
       )}
-      {debugPayload && scoreTab !== 'events' && <pre className="debugPanel">{debugPayload}</pre>}
+      {debugPayload && scoreTab !== 'ledger' && <pre className="debugPanel">{debugPayload}</pre>}
     </aside>
   );
 }
 
 function ManualMovementComposer({ busy, error, onCreateMovement }: { busy: boolean; error?: string; onCreateMovement: (payload: ManualMovementPayload) => Promise<unknown> }) {
   const [title, setTitle] = useState('');
+  const [workspacePath, setWorkspacePath] = useState(() => localStorage.getItem('misconduct.lastMovementWorkspace') || '');
   const [description, setDescription] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
   const ready = title.trim().length > 0;
@@ -2213,9 +2237,12 @@ function ManualMovementComposer({ busy, error, onCreateMovement }: { busy: boole
 
     try {
       setLocalError(null);
+      const target = workspacePath.trim();
+      if (target) localStorage.setItem('misconduct.lastMovementWorkspace', target);
       await onCreateMovement({
         title: title.trim(),
-        description: description.trim()
+        description: description.trim(),
+        workspace_path: target || undefined
       });
       setTitle('');
       setDescription('');
@@ -2227,16 +2254,20 @@ function ManualMovementComposer({ busy, error, onCreateMovement }: { busy: boole
   return (
     <form className="movementComposer" onSubmit={submit}>
       <div className="movementComposerHeader">
-        <p className="eyebrow">Conductor intake</p>
-        <button className="button primary compact" disabled={busy || !ready} type="submit"><PlayCircle size={14} />Conduct</button>
+        <p className="eyebrow">Movement intake</p>
+        <button className="button primary compact" disabled={busy || !ready} type="submit"><PlayCircle size={14} />Conduct in repo</button>
       </div>
       <label>
         Movement title
-        <input value={title} onChange={event => setTitle(event.target.value)} placeholder="Add a ready-to-conduct score" />
+        <input value={title} onChange={event => setTitle(event.target.value)} placeholder="Implement a focused change" />
       </label>
       <label>
-        Score brief
-        <textarea value={description} onChange={event => setDescription(event.target.value)} placeholder="Objective, constraints, repository context" />
+        Target directory / repo
+        <input value={workspacePath} onChange={event => setWorkspacePath(event.target.value)} placeholder="/Users/you/project or blank for managed workspace" />
+      </label>
+      <label>
+        Baton notes
+        <textarea value={description} onChange={event => setDescription(event.target.value)} placeholder="Objective, constraints, files, commands, and evidence expected" />
       </label>
       {(localError || error) && <p className="formError">{localError || error}</p>}
     </form>
@@ -2244,13 +2275,16 @@ function ManualMovementComposer({ busy, error, onCreateMovement }: { busy: boole
 }
 
 function MovementPanel({ card }: { card: Card }) {
+  const workspace = card.workspacePath || card.workspaceTarget || card.repositoryPath;
   return (
     <>
       <div className="scoreSheet">
         <div className="staffLines"><i /><i /><i /><i /><i /></div>
         <div className="scoreNotes" style={{ '--movement-intensity': `${card.intensity}%` } as React.CSSProperties}>♪ ♫ ♩ ♬</div>
       </div>
+      <CueChain card={card} />
       <dl className="definitionList compact">
+        <div><dt>Workspace</dt><dd>{workspace ? <code>{workspace}</code> : 'managed movement workspace'}</dd></div>
         <div><dt>Section</dt><dd>{card.section}</dd></div>
         <div><dt>Instrument</dt><dd>{card.instrumentName}</dd></div>
         <div><dt>Agent</dt><dd>{card.agent}</dd></div>
@@ -2258,15 +2292,50 @@ function MovementPanel({ card }: { card: Card }) {
       </dl>
       {(card.scoreSummary || card.scorePath) && (
         <div className="scoreArtifact">
-          <b>Conductor score</b>
+          <b>Conductor plan artifact</b>
           {card.scoreSummary && <p>{card.scoreSummary}</p>}
           {card.scorePath && <code>{card.scorePath}</code>}
+        </div>
+      )}
+      {card.verdictPath && (
+        <div className="scoreArtifact judgeArtifact">
+          <b>Judge verdict artifact</b>
+          <code>{card.verdictPath}</code>
         </div>
       )}
       <PhaseTrace entries={card.phaseHistory} />
       <AgentConversation messages={card.conversation} activeAgent={card.agent} />
       <p>{card.message || card.retry || 'Waiting for the next orchestration cue.'}</p>
     </>
+  );
+}
+
+function CueChain({ card }: { card: Card }) {
+  const phase = (card.phase || card.stage || '').toLowerCase();
+  const completed = new Set(card.phaseHistory.filter(entry => entry.status === 'completed').map(entry => String(entry.phase || '').toLowerCase()));
+  const cueState = (name: string) => {
+    if (completed.has(name)) return 'complete';
+    if (phase === name) return 'active';
+    return 'waiting';
+  };
+  const refinerLabel = card.refinerMaxAttempts ? `${card.refinerAttempt || 0}/${card.refinerMaxAttempts}` : undefined;
+  const cues = [
+    { id: 'conductor', label: 'Conductor', detail: 'plans movement', artifact: card.scorePath, state: cueState('conductor') },
+    { id: 'build', label: 'Builder', detail: 'edits workspace', artifact: card.workspacePath || card.workspaceTarget || card.repositoryPath, state: cueState('build') },
+    { id: 'judge', label: 'Judge', detail: 'checks evidence', artifact: card.verdictPath, state: cueState('judge') },
+    { id: 'refiner', label: 'Refiner', detail: refinerLabel ? `fixes findings ${refinerLabel}` : 'fixes findings', artifact: card.judgeVerdict ? 'judge verdict loaded' : undefined, state: cueState('refiner') }
+  ];
+
+  return (
+    <div className="cueChain" aria-label="Movement cue chain">
+      {cues.map(cue => (
+        <div key={cue.id} className={`cueStep ${cue.state}`}>
+          <b>{cue.label}</b>
+          <span>{cue.detail}</span>
+          <small>{cue.artifact || 'awaiting artifact'}</small>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -2308,19 +2377,32 @@ function AgentConversation({ messages, activeAgent }: { messages: AgentConversat
   );
 }
 
-function MovementEvents({ card, debugPayload }: { card: Card; debugPayload: string | null }) {
+function MovementEvents({ card, debugPayload, liveEvents }: { card: Card; debugPayload: string | null; liveEvents: OrchestrationEvent[] }) {
+  const movementEvents = liveEvents
+    .filter(event => {
+      const ids = [event.issue_id, event.issue_identifier].filter(Boolean);
+      return ids.includes(card.backendId) || ids.includes(card.identifier);
+    })
+    .slice(-18)
+    .reverse();
   const events = [
     ['Movement', card.movement],
     ['Status', card.status],
     ['Turns', String(card.turns)],
     ['Notes', card.tokens.toLocaleString()],
+    ['Workspace', card.workspacePath || card.workspaceTarget || card.repositoryPath || 'managed movement workspace'],
     ['Score path', card.scorePath || 'none'],
+    ['Verdict path', card.verdictPath || 'none'],
     ['Retry due', card.retry || 'none'],
     ['Last message', card.message || 'none reported']
   ];
   return (
     <div className="movementTimeline">
       {events.map(([label, value]) => <div className="timelineRow" key={label}><b>{label}</b><span>{value}</span></div>)}
+      <div className="liveMovementLedger">
+        <h3>Live pit ledger</h3>
+        {movementEvents.length ? movementEvents.map(event => <EventRow event={event} key={event.id} />) : <p className="subtle">No live events for this movement yet.</p>}
+      </div>
       {debugPayload && <pre className="debugPanel inline">{debugPayload}</pre>}
     </div>
   );
@@ -2774,7 +2856,13 @@ function WorkflowPanel({
       </div>
 
       <aside className="workflowInspector pixelPanel">
-        <div className="panelHeader"><div><p className="eyebrow">Rehearsal Desk</p><h2>Judge / Refiner / Location</h2></div></div>
+        <div className="panelHeader"><div><p className="eyebrow">Rehearsal Desk</p><h2>Activation / Location</h2></div></div>
+        <div className="workflowMap">
+          <div><b>1. Compose</b><span>WORKFLOW.md defines the orchestra, roles, and defaults.</span></div>
+          <div><b>2. Rehearse</b><span>Readiness checks verify provider, auth, roster, and workspace.</span></div>
+          <div><b>3. Conduct</b><span>A movement targets a repo or managed workspace and starts the phase chain.</span></div>
+          <div><b>4. Observe</b><span>Conductor, Builder, Judge, and Refiner publish artifacts and ledger events.</span></div>
+        </div>
         <div className="targetPreview">
           <b>Backend-managed root</b>
           <code>{filesQuery.data?.root || (enabled ? 'loading…' : 'waiting for desktop backend')}</code>
@@ -2807,8 +2895,8 @@ function WorkflowPanel({
         </div>
 
         <div className="resultPanel">
-          <h3>Judge / Refiner</h3>
-          {review ? <pre>{JSON.stringify(review, null, 2)}</pre> : <p className="subtle">No review yet.</p>}
+          <h3>Workflow validation judge</h3>
+          {review ? <pre>{JSON.stringify(review, null, 2)}</pre> : <p className="subtle">No validation review yet.</p>}
         </div>
 
         <div className="resultPanel">
@@ -3016,7 +3104,7 @@ function SafetyPanel() {
     <section className="doc pixelPanel">
       <h2><ShieldAlert size={20} /> Safety Posture</h2>
       <ul className="checkList">
-        <li>Agent working directories are constrained to per-issue workspaces.</li>
+        <li>Agent working directories are explicit: a movement target repo or a managed movement workspace.</li>
         <li>Workspace keys allow only alphanumeric, dot, underscore, and dash characters.</li>
         <li>Secrets use environment indirection and are not emitted in public config JSON.</li>
         <li>Hooks time out to prevent orchestration stalls.</li>
