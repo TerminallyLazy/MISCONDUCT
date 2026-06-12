@@ -94,6 +94,7 @@ const KanbanCardSchema = z.object({
   judge_verdict: z.any().optional(),
   verdict: z.string().nullable().optional(),
   verdict_path: z.string().nullable().optional(),
+  runtime_evidence: z.any().optional(),
   refiner_attempt: z.number().nullable().optional(),
   refiner_max_attempts: z.number().nullable().optional(),
   attempt: z.number().optional(),
@@ -266,6 +267,7 @@ type Card = {
   repositoryPath?: string;
   verdictPath?: string;
   judgeVerdict?: unknown;
+  runtimeEvidence: RuntimeEvidence;
   refinerAttempt?: number | null;
   refinerMaxAttempts?: number | null;
   phaseHistory: PhaseHistoryEntry[];
@@ -279,6 +281,27 @@ type ManualMovementPayload = {
   description?: string;
   identifier?: string;
   workspace_path?: string;
+  expected_evidence?: string;
+  validation_commands?: string;
+  file_focus?: string;
+};
+type RuntimeCommandSpan = {
+  phase?: string;
+  agent?: string;
+  kind: string;
+  label: string;
+  status: string;
+  message?: string;
+  at?: string;
+};
+type RuntimeEvidence = {
+  workspacePath?: string;
+  scorePath?: string;
+  verdictPath?: string;
+  changedFiles: string[];
+  commandSpans: RuntimeCommandSpan[];
+  artifactPaths: string[];
+  lastCheckedAt?: string;
 };
 
 const columns = ['Ready', 'In Progress', 'Human Review', 'Retry', 'Blocked', 'Done'];
@@ -830,6 +853,7 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
       const profileStagePosition = stagePosition(assignedProfile?.stage_position);
       const conversation = conversationFromCard(rawRecord);
       const phaseHistory = phaseHistoryFromCard(rawRecord);
+      const runtimeEvidence = runtimeEvidenceFromCard(rawRecord);
 
       return {
         id: `${column.id}-${backendId}`,
@@ -861,6 +885,7 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
         repositoryPath: stringField(rawRecord, 'repository_path'),
         verdictPath: stringField(rawRecord, 'verdict_path'),
         judgeVerdict: rawRecord.judge_verdict,
+        runtimeEvidence,
         refinerAttempt: typeof raw.refiner_attempt === 'number' ? raw.refiner_attempt : undefined,
         refinerMaxAttempts: typeof raw.refiner_max_attempts === 'number' ? raw.refiner_max_attempts : undefined,
         phaseHistory,
@@ -991,6 +1016,73 @@ function phaseHistoryFromCard(raw: Record<string, unknown>): PhaseHistoryEntry[]
     .filter((item): item is PhaseHistoryEntry => Boolean(item))
     .slice()
     .reverse();
+}
+
+function runtimeEvidenceFromCard(raw: Record<string, unknown>): RuntimeEvidence {
+  const evidence = raw.runtime_evidence && typeof raw.runtime_evidence === 'object' && !Array.isArray(raw.runtime_evidence)
+    ? raw.runtime_evidence as Record<string, unknown>
+    : raw.runtimeEvidence && typeof raw.runtimeEvidence === 'object' && !Array.isArray(raw.runtimeEvidence)
+      ? raw.runtimeEvidence as Record<string, unknown>
+      : {};
+
+  const workspacePath = stringField(evidence, 'workspace_path') || stringField(evidence, 'workspacePath') || stringField(raw, 'workspace_path') || stringField(raw, 'workspace_target') || stringField(raw, 'repository_path');
+  const scorePath = stringField(evidence, 'score_path') || stringField(evidence, 'scorePath') || stringField(raw, 'score_path');
+  const verdictPath = stringField(evidence, 'verdict_path') || stringField(evidence, 'verdictPath') || stringField(raw, 'verdict_path');
+  const artifactPaths = uniqueStrings([
+    ...stringListField(evidence, 'artifact_paths'),
+    ...stringListField(evidence, 'artifactPaths'),
+    scorePath,
+    verdictPath
+  ]);
+
+  return {
+    workspacePath,
+    scorePath,
+    verdictPath,
+    changedFiles: uniqueStrings([
+      ...stringListField(evidence, 'changed_files'),
+      ...stringListField(evidence, 'changedFiles')
+    ]),
+    commandSpans: commandSpansFromEvidence(evidence),
+    artifactPaths,
+    lastCheckedAt: stringField(evidence, 'last_checked_at') || stringField(evidence, 'lastCheckedAt') || undefined
+  };
+}
+
+function commandSpansFromEvidence(evidence: Record<string, unknown>): RuntimeCommandSpan[] {
+  const spans = evidence.command_spans || evidence.commandSpans;
+  if (!Array.isArray(spans)) return [];
+
+  return spans
+    .map<RuntimeCommandSpan | null>(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+      const record = item as Record<string, unknown>;
+      const label = stringField(record, 'label') || stringField(record, 'command') || stringField(record, 'action') || stringField(record, 'kind');
+      if (!label) return null;
+      return {
+        phase: stringField(record, 'phase') || stringField(record, 'stage') || undefined,
+        agent: stringField(record, 'agent') || stringField(record, 'agent_name') || undefined,
+        kind: stringField(record, 'kind') || 'runner',
+        label,
+        status: stringField(record, 'status') || 'observed',
+        message: stringField(record, 'message') || undefined,
+        at: stringField(record, 'at') || stringField(record, 'occurred_at') || undefined
+      };
+    })
+    .filter((item): item is RuntimeCommandSpan => Boolean(item))
+    .slice(-24);
+}
+
+function stringListField(value: Record<string, unknown>, key: string) {
+  const field = value[key];
+  if (!Array.isArray(field)) return [];
+  return field
+    .map(item => typeof item === 'string' ? item.trim() : '')
+    .filter(Boolean);
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.map(value => value.trim()).filter(Boolean)));
 }
 
 function stringField(value: Record<string, unknown>, key: string) {
@@ -2026,56 +2118,60 @@ function OrchestraFloor({
 
   return (
     <div className="orchestraDeck">
-      <section className="stageMap pixelPanel" aria-label="Animated orchestra floor">
-        <div className="stageBackdrop" aria-hidden="true">
-          <div className="operaCurtain curtainLeft" />
-          <div className="operaCurtain curtainRight" />
-          <div className="footlights" />
-          <div className="backWall">
-            <span className="hallVault" />
-            <span className="goldColumn columnLeft" />
-            <span className="goldColumn columnRight" />
-            <span className="sideBox sideBoxLeft"><i /><i /></span>
-            <span className="sideBox sideBoxRight"><i /><i /></span>
-            <span className="organLoft"><i /><i /><i /><i /><i /><i /><i /></span>
-            <span className="balcony balconyLeft"><i /><i /><i /></span>
-            <span className="balcony balconyCenter"><i /><i /><i /><i /></span>
-            <span className="balcony balconyRight"><i /><i /><i /></span>
-            <span className="prosceniumArch"><b>CODEX HALL</b></span>
-            <span className="chandelier"><i /><i /><i /><i /></span>
+      <div className="orchestraMainColumn">
+        <section className="stageMap pixelPanel" aria-label="Animated orchestra floor">
+          <div className="stageBackdrop" aria-hidden="true">
+            <div className="operaCurtain curtainLeft" />
+            <div className="operaCurtain curtainRight" />
+            <div className="footlights" />
+            <div className="backWall">
+              <span className="hallVault" />
+              <span className="goldColumn columnLeft" />
+              <span className="goldColumn columnRight" />
+              <span className="sideBox sideBoxLeft"><i /><i /></span>
+              <span className="sideBox sideBoxRight"><i /><i /></span>
+              <span className="organLoft"><i /><i /><i /><i /><i /><i /><i /></span>
+              <span className="balcony balconyLeft"><i /><i /><i /></span>
+              <span className="balcony balconyCenter"><i /><i /><i /><i /></span>
+              <span className="balcony balconyRight"><i /><i /><i /></span>
+              <span className="prosceniumArch"><b>CODEX HALL</b></span>
+              <span className="chandelier"><i /><i /><i /><i /></span>
+            </div>
+            <div className="stageApron" />
+            <div className="stageFloor" />
+            <div className="pitRail" />
           </div>
-          <div className="stageApron" />
-          <div className="stageFloor" />
-          <div className="pitRail" />
-        </div>
-        <MovementRibbon movements={movements} activeVoices={orchestraAudio.activeVoices} tuning={orchestraAudio.tuning} />
-        <Conductor active={cards.length > 0} />
-        <CueLines cards={cards} />
-        {renderedStations.map(station => (
-          <Station key={station.id} station={station} count={counts[station.id] || 0} />
-        ))}
-        {cards.length === 0 && <EmptyHouse />}
-        {cards.map((card, index) => {
-          const station = stationForCard(card);
-          return (
-            <PerformerCard
-              key={card.id}
-              card={card}
-              index={index}
-              station={station}
-              selected={selectedCardId === card.id}
-              busy={busy}
-              onSelect={() => setSelectedCardId(card.id)}
-              onDebug={() => onDebug(card.backendId)}
-              onMove={() => onMove(card.backendId, 'Done')}
-              onRetry={() => onAction(card.backendId, 'retry')}
-              onArchive={() => onAction(card.backendId, 'archive')}
-            />
-          );
-        })}
-        {idleMusicians.map((musician, index) => <IdleMusicianCard key={musician.id} musician={musician} index={index} />)}
-        <FloatingNotes cards={cards} />
-      </section>
+          <MovementRibbon movements={movements} activeVoices={orchestraAudio.activeVoices} tuning={orchestraAudio.tuning} />
+          <RuntimeLegend />
+          <Conductor active={cards.length > 0} />
+          <CueLines cards={cards} />
+          {renderedStations.map(station => (
+            <Station key={station.id} station={station} count={counts[station.id] || 0} />
+          ))}
+          {cards.length === 0 && <EmptyHouse />}
+          {cards.map((card, index) => {
+            const station = stationForCard(card);
+            return (
+              <PerformerCard
+                key={card.id}
+                card={card}
+                index={index}
+                station={station}
+                selected={selectedCardId === card.id}
+                busy={busy}
+                onSelect={() => setSelectedCardId(card.id)}
+                onDebug={() => onDebug(card.backendId)}
+                onMove={() => onMove(card.backendId, 'Done')}
+                onRetry={() => onAction(card.backendId, 'retry')}
+                onArchive={() => onAction(card.backendId, 'archive')}
+              />
+            );
+          })}
+          {idleMusicians.map((musician, index) => <IdleMusicianCard key={musician.id} musician={musician} index={index} />)}
+          <FloatingNotes cards={cards} />
+        </section>
+        <MovementPipeline cards={cards} selectedCardId={selectedCardId} onSelect={setSelectedCardId} />
+      </div>
       <ScoreConsole
         selectedCard={selectedCard}
         debugPayload={debugPayload}
@@ -2109,6 +2205,67 @@ function MovementRibbon({ movements, activeVoices, tuning }: { movements: { move
       )) : <span className="movementChip empty">No active movement</span>}
       <span className="movementVoices"><Waves size={13} /> {activeVoices} voices · {tuningLabel(tuning)}</span>
     </div>
+  );
+}
+
+function RuntimeLegend() {
+  const items = [
+    ['Musician', 'assigned profile'],
+    ['Music stand', 'movement phase'],
+    ['Cue line', 'active routing'],
+    ['Notes', 'runner events'],
+    ['Evidence', 'files, commands, artifacts']
+  ];
+
+  return (
+    <div className="runtimeLegend" aria-label="Runtime legend">
+      {items.map(([label, meaning]) => <span key={label}><b>{label}</b>{meaning}</span>)}
+    </div>
+  );
+}
+
+function MovementPipeline({ cards, selectedCardId, onSelect }: { cards: Card[]; selectedCardId: string | null; onSelect: (id: string) => void }) {
+  return (
+    <section className="movementPipeline pixelPanel" aria-label="Plain movement pipeline">
+      <div className="pipelineHeader">
+        <div>
+          <p className="eyebrow">Operations view</p>
+          <h2>Movement pipeline</h2>
+        </div>
+        <span>{cards.length} active</span>
+      </div>
+      <div className="pipelineRows">
+        {cards.length ? cards.map(card => {
+          const health = evidenceHealth(card);
+          const workspace = card.runtimeEvidence.workspacePath || card.workspacePath || card.workspaceTarget || card.repositoryPath || 'managed workspace';
+          return (
+            <button key={card.id} className={card.id === selectedCardId ? 'pipelineRow selected' : 'pipelineRow'} onClick={() => onSelect(card.id)}>
+              <div>
+                <b>{card.identifier}</b>
+                <span>{card.title}</span>
+              </div>
+              <div>
+                <b>{phaseAgentLabel(card.phase || card.stage)}</b>
+                <span>{card.status}</span>
+              </div>
+              <div>
+                <b>{card.agent}</b>
+                <span>{workspace}</span>
+              </div>
+              <div className="pipelineEvidence">
+                <StatusPill status={health.status} />
+                <small>{card.runtimeEvidence.changedFiles.length} files · {card.runtimeEvidence.commandSpans.length} spans · {card.runtimeEvidence.artifactPaths.length} artifacts</small>
+              </div>
+            </button>
+          );
+        }) : (
+          <div className="pipelineEmpty">
+            <b>No active movements</b>
+            <span>Conduct a movement to create a runtime-backed pipeline row.</span>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -2292,6 +2449,9 @@ function ManualMovementComposer({ busy, error, onCreateMovement }: { busy: boole
   const [title, setTitle] = useState('');
   const [workspacePath, setWorkspacePath] = useState(() => localStorage.getItem('misconduct.lastMovementWorkspace') || '');
   const [description, setDescription] = useState('');
+  const [expectedEvidence, setExpectedEvidence] = useState('');
+  const [validationCommands, setValidationCommands] = useState('');
+  const [fileFocus, setFileFocus] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
   const ready = title.trim().length > 0;
 
@@ -2309,10 +2469,16 @@ function ManualMovementComposer({ busy, error, onCreateMovement }: { busy: boole
       await onCreateMovement({
         title: title.trim(),
         description: description.trim(),
-        workspace_path: target || undefined
+        workspace_path: target || undefined,
+        expected_evidence: expectedEvidence.trim() || undefined,
+        validation_commands: validationCommands.trim() || undefined,
+        file_focus: fileFocus.trim() || undefined
       });
       setTitle('');
       setDescription('');
+      setExpectedEvidence('');
+      setValidationCommands('');
+      setFileFocus('');
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : String(err));
     }
@@ -2336,6 +2502,18 @@ function ManualMovementComposer({ busy, error, onCreateMovement }: { busy: boole
         Baton notes
         <textarea value={description} onChange={event => setDescription(event.target.value)} placeholder="Objective, constraints, files, commands, and evidence expected" />
       </label>
+      <label>
+        Evidence expected
+        <textarea value={expectedEvidence} onChange={event => setExpectedEvidence(event.target.value)} placeholder="Files changed, artifact paths, screenshots, tests, or operator-visible proof" />
+      </label>
+      <label>
+        Validation commands
+        <textarea value={validationCommands} onChange={event => setValidationCommands(event.target.value)} placeholder={"npm run build\nSYMPHONY_HTTP_ENABLED=false mix test"} />
+      </label>
+      <label>
+        File focus
+        <input value={fileFocus} onChange={event => setFileFocus(event.target.value)} placeholder="src/main.tsx, symphony_elixir/lib/..." />
+      </label>
       {(localError || error) && <p className="formError">{localError || error}</p>}
     </form>
   );
@@ -2345,6 +2523,7 @@ function MovementPanel({ card }: { card: Card }) {
   const workspace = card.workspacePath || card.workspaceTarget || card.repositoryPath;
   return (
     <>
+      <RuntimeEvidenceSummary card={card} />
       <div className="scoreSheet">
         <div className="staffLines"><i /><i /><i /><i /><i /></div>
         <div className="scoreNotes" style={{ '--movement-intensity': `${card.intensity}%` } as React.CSSProperties}>♪ ♫ ♩ ♬</div>
@@ -2374,6 +2553,44 @@ function MovementPanel({ card }: { card: Card }) {
       <AgentConversation messages={card.conversation} activeAgent={card.agent} />
       <p>{card.message || card.retry || 'Waiting for the next orchestration cue.'}</p>
     </>
+  );
+}
+
+function RuntimeEvidenceSummary({ card }: { card: Card }) {
+  const evidence = card.runtimeEvidence;
+  const health = evidenceHealth(card);
+  const workspace = evidence.workspacePath || card.workspacePath || card.workspaceTarget || card.repositoryPath;
+  const latestSpan = evidence.commandSpans[evidence.commandSpans.length - 1];
+
+  return (
+    <section className={`runtimeEvidenceSummary ${health.tone}`} aria-label="Runtime evidence summary">
+      <div className="evidenceHeader">
+        <div>
+          <p className="eyebrow">Runtime evidence</p>
+          <h3>{health.label}</h3>
+        </div>
+        <StatusPill status={health.status} />
+      </div>
+      <div className="evidenceStats">
+        <EvidenceStat label="Changed files" value={String(evidence.changedFiles.length)} />
+        <EvidenceStat label="Tool spans" value={String(evidence.commandSpans.length)} />
+        <EvidenceStat label="Artifacts" value={String(evidence.artifactPaths.length)} />
+      </div>
+      <dl className="definitionList compact">
+        <div><dt>Workspace</dt><dd>{workspace ? <code>{workspace}</code> : 'not reported'}</dd></div>
+        <div><dt>Latest span</dt><dd>{latestSpan ? `${latestSpan.label} · ${latestSpan.status}` : 'no runner/tool span captured yet'}</dd></div>
+        <div><dt>Last checked</dt><dd>{evidence.lastCheckedAt ? formatEventTime(evidence.lastCheckedAt) : 'not checked yet'}</dd></div>
+      </dl>
+    </section>
+  );
+}
+
+function EvidenceStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <b>{value}</b>
+    </div>
   );
 }
 
@@ -2469,7 +2686,41 @@ function MovementEvents({ card, debugPayload, liveEvents }: { card: Card; debugP
         <h3>Agent conversation</h3>
         {movementEvents.length ? <EventConversation events={movementEvents} /> : <p className="subtle">No live events for this movement yet.</p>}
       </div>
+      <RuntimeEvidenceDetails evidence={card.runtimeEvidence} />
       {debugPayload && <pre className="debugPanel inline">{debugPayload}</pre>}
+    </div>
+  );
+}
+
+function RuntimeEvidenceDetails({ evidence }: { evidence: RuntimeEvidence }) {
+  return (
+    <section className="runtimeEvidenceDetails">
+      <h3>Files, artifacts, and tool spans</h3>
+      <EvidenceList title="Changed files" values={evidence.changedFiles} empty="No changed files captured yet." />
+      <EvidenceList title="Artifacts" values={evidence.artifactPaths} empty="No score or verdict artifacts captured yet." />
+      <div className="commandSpanList">
+        <b>Tool / runner spans</b>
+        {evidence.commandSpans.length ? evidence.commandSpans.slice(-12).map((span, index) => (
+          <div className={`commandSpan ${statusClass(span.status)}`} key={`${span.at || index}-${span.label}`}>
+            <span>{span.phase || 'runtime'} · {span.agent || 'agent'}</span>
+            <strong>{span.label}</strong>
+            <small>{span.status}{span.message ? ` · ${span.message}` : ''}</small>
+          </div>
+        )) : <p className="subtle">No tool or runner spans captured yet.</p>}
+      </div>
+    </section>
+  );
+}
+
+function EvidenceList({ title, values, empty }: { title: string; values: string[]; empty: string }) {
+  return (
+    <div className="evidenceList">
+      <b>{title}</b>
+      {values.length ? (
+        <ul>
+          {values.slice(0, 12).map(value => <li key={value}><code>{value}</code></li>)}
+        </ul>
+      ) : <p className="subtle">{empty}</p>}
     </div>
   );
 }
@@ -2529,6 +2780,22 @@ function StatusPill({ status }: { status: string }) {
   const s = status.toLowerCase();
   const Icon = s.includes('block') ? AlertTriangle : s.includes('done') ? CheckCircle2 : s.includes('retry') ? Clock : s.includes('judge') || s.includes('review') ? BrainCircuit : s.includes('refin') || s.includes('execut') || s.includes('run') ? PlayCircle : CircleDot;
   return <span className={`pill ${statusClass(status)}`}><Icon size={13} />{status}</span>;
+}
+
+function evidenceHealth(card: Card) {
+  const evidence = card.runtimeEvidence;
+  const count = evidence.changedFiles.length + evidence.commandSpans.length + evidence.artifactPaths.length;
+  const status = card.status.toLowerCase();
+  if (count > 0 && (status.includes('complete') || status.includes('done'))) {
+    return { status: 'evidence verified', label: 'Evidence captured for completed movement', tone: 'success' };
+  }
+  if (count > 0) {
+    return { status: 'evidence live', label: 'Evidence is being captured', tone: 'active' };
+  }
+  if (status.includes('fail') || status.includes('block') || status.includes('retry')) {
+    return { status: 'evidence missing', label: 'No runtime evidence captured before interruption', tone: 'danger' };
+  }
+  return { status: 'awaiting evidence', label: 'Runtime evidence has not appeared yet', tone: 'warning' };
 }
 
 function tuningLabel(tuning: OrchestraTuning) {
