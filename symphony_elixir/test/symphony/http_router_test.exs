@@ -90,7 +90,10 @@ defmodule Symphony.Http.RouterTest do
         "/api/movements",
         Jason.encode!(%{
           title: "Rehearse optional tracker workflow",
-          description: "Prove a movement can be queued without Linear."
+          description: "Prove a movement can be queued without Linear.",
+          expected_evidence: ["runtime evidence card includes changed files"],
+          validation_commands: ["mix test test/symphony/http_api_test.exs"],
+          file_focus: ["symphony_elixir/lib/symphony/http/api.ex"]
         })
       )
       |> put_req_header("content-type", "application/json")
@@ -101,6 +104,12 @@ defmodule Symphony.Http.RouterTest do
     assert body["accepted"] == true
     assert body["movement"]["identifier"] =~ "MOV-"
     assert body["movement"]["labels"] == ["manual", "misconduct"]
+    assert body["movement"]["description"] =~ "Expected evidence:"
+    assert body["movement"]["description"] =~ "- runtime evidence card includes changed files"
+    assert body["movement"]["description"] =~ "Validation commands:"
+    assert body["movement"]["description"] =~ "- mix test test/symphony/http_api_test.exs"
+    assert body["movement"]["description"] =~ "File focus:"
+    assert body["movement"]["description"] =~ "- symphony_elixir/lib/symphony/http/api.ex"
     assert body["run"]["title"] == "Rehearse optional tracker workflow"
   end
 

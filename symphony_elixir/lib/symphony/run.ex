@@ -18,6 +18,15 @@ defmodule Symphony.Run do
             judge_verdict: nil,
             score_path: nil,
             score_summary: nil,
+            runtime_evidence: %{
+              workspace_path: nil,
+              score_path: nil,
+              verdict_path: nil,
+              changed_files: [],
+              command_spans: [],
+              artifact_paths: [],
+              last_checked_at: nil
+            },
             phase_history: [],
             conversation: [],
             turn_count: 0,

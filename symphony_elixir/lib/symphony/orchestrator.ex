@@ -8,6 +8,7 @@ defmodule Symphony.Orchestrator do
   @judge_verdict_relative_path ".symphony/judge-verdict.json"
   @conductor_score_relative_path ".symphony/conductor-score.md"
   @max_conversation_messages 40
+  @max_command_spans 40
 
   def start_link(opts),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -143,18 +144,20 @@ defmodule Symphony.Orchestrator do
               do: "#{event[:thread_id]}-#{event[:turn_id]}",
               else: run.session_id
 
-          nr = %{
-            run
-            | last_event: ev,
-              last_message: msg,
-              last_event_at: now,
-              tokens: tokens,
-              session_id: sid,
-              turn_count:
-                if(ev == "turn_completed", do: run.turn_count + 1, else: run.turn_count),
-              events: [%{at: now, event: ev, message: msg} | Enum.take(run.events, 20)],
-              conversation: agent_conversation(run, event, now)
-          }
+          nr =
+            %{
+              run
+              | last_event: ev,
+                last_message: msg,
+                last_event_at: now,
+                tokens: tokens,
+                session_id: sid,
+                turn_count:
+                  if(ev == "turn_completed", do: run.turn_count + 1, else: run.turn_count),
+                events: [%{at: now, event: ev, message: msg} | Enum.take(run.events, 20)],
+                conversation: agent_conversation(run, event, now)
+            }
+            |> append_runtime_command_spans(event, now)
 
           %{e | run: nr}
       end)
@@ -354,6 +357,7 @@ defmodule Symphony.Orchestrator do
         last_message: String.slice(prompt, 0, 160),
         prompt: prompt,
         score_path: conductor_score_path(%{workspace_path: ws.path}),
+        runtime_evidence: initial_runtime_evidence(ws.path),
         phase_history: [phase_history_entry(phase, agent_profile, :started)],
         conversation: [
           handoff_message(
@@ -459,7 +463,7 @@ defmodule Symphony.Orchestrator do
       message: inspect(reason)
     })
 
-    state |> add_runtime(id) |> retry_id(id, inspect(reason))
+    state |> refresh_runtime_evidence(id) |> add_runtime(id) |> retry_id(id, inspect(reason))
   end
 
   defp finish_conductor_success(state, id) do
@@ -693,6 +697,7 @@ defmodule Symphony.Orchestrator do
              agent_profile: run.agent_profile,
              score_path: run.score_path,
              score_summary: run.score_summary,
+             runtime_evidence: run.runtime_evidence,
              phase_history: run.phase_history,
              conversation: run.conversation,
              judge_verdict: run.judge_verdict,
@@ -740,6 +745,7 @@ defmodule Symphony.Orchestrator do
       agent_profile: metadata[:agent_profile],
       score_path: metadata[:score_path],
       score_summary: metadata[:score_summary],
+      runtime_evidence: metadata[:runtime_evidence],
       phase_history: metadata[:phase_history],
       conversation: metadata[:conversation],
       judge_verdict: metadata[:judge_verdict],
@@ -870,31 +876,33 @@ defmodule Symphony.Orchestrator do
             ]
             |> Enum.take(@max_conversation_messages)
 
-          run = %{
-            previous_run
-            | phase: phase,
-              agent_profile: agent_profile,
-              status: :running,
-              started_at: DateTime.utc_now(),
-              last_event_at: nil,
-              last_event: nil,
-              last_message: String.slice(prompt, 0, 160),
-              session_id: nil,
-              turn_count: 0,
-              tokens: zero_tokens(),
-              events: [],
-              prompt: prompt,
-              phase_history: [
-                phase_history_entry(phase, agent_profile, :started)
-                | previous_run.phase_history || []
-              ],
-              conversation: conversation,
-              refiner_attempt:
-                Map.get(context, :refiner_attempt, previous_run.refiner_attempt || 0),
-              refiner_max_attempts:
-                Map.get(context, :refiner_max_attempts, previous_run.refiner_max_attempts),
-              judge_verdict: Map.get(context, :judge_verdict, previous_run.judge_verdict)
-          }
+          run =
+            %{
+              previous_run
+              | phase: phase,
+                agent_profile: agent_profile,
+                status: :running,
+                started_at: DateTime.utc_now(),
+                last_event_at: nil,
+                last_event: nil,
+                last_message: String.slice(prompt, 0, 160),
+                session_id: nil,
+                turn_count: 0,
+                tokens: zero_tokens(),
+                events: [],
+                prompt: prompt,
+                phase_history: [
+                  phase_history_entry(phase, agent_profile, :started)
+                  | previous_run.phase_history || []
+                ],
+                conversation: conversation,
+                refiner_attempt:
+                  Map.get(context, :refiner_attempt, previous_run.refiner_attempt || 0),
+                refiner_max_attempts:
+                  Map.get(context, :refiner_max_attempts, previous_run.refiner_max_attempts),
+                judge_verdict: Map.get(context, :judge_verdict, previous_run.judge_verdict)
+            }
+            |> refresh_run_runtime_evidence()
 
           with :ok <- prepare_phase_artifacts(run) do
             parent = self()
@@ -1065,7 +1073,7 @@ defmodule Symphony.Orchestrator do
       data: data
     })
 
-    retry_id(state, id, message, data)
+    state |> refresh_runtime_evidence(id) |> retry_id(id, message, data)
   end
 
   defp block_verdict(state, id, phase, reason, message, data) do
@@ -1078,7 +1086,7 @@ defmodule Symphony.Orchestrator do
       data: data
     })
 
-    state |> add_runtime(id) |> retry_id(id, message, data)
+    state |> refresh_runtime_evidence(id) |> add_runtime(id) |> retry_id(id, message, data)
   end
 
   defp publish_judge_verdict(state, id, verdict) do
@@ -1108,14 +1116,16 @@ defmodule Symphony.Orchestrator do
         state
 
       entry ->
-        run = %{
-          entry.run
-          | judge_verdict: public_verdict(verdict),
-            phase_history: [
-              phase_history_entry("judge", entry.run.agent_profile, :completed)
-              | entry.run.phase_history || []
-            ]
-        }
+        run =
+          %{
+            entry.run
+            | judge_verdict: public_verdict(verdict),
+              phase_history: [
+                phase_history_entry("judge", entry.run.agent_profile, :completed)
+                | entry.run.phase_history || []
+              ]
+          }
+          |> refresh_run_runtime_evidence()
 
         put_in(state.running[id], %{entry | run: run})
     end
@@ -1127,15 +1137,17 @@ defmodule Symphony.Orchestrator do
         state
 
       entry ->
-        run = %{
-          entry.run
-          | score_path: conductor_score_path(entry.run),
-            score_summary: score_excerpt(score),
-            phase_history: [
-              phase_history_entry("conductor", entry.run.agent_profile, :completed)
-              | entry.run.phase_history || []
-            ]
-        }
+        run =
+          %{
+            entry.run
+            | score_path: conductor_score_path(entry.run),
+              score_summary: score_excerpt(score),
+              phase_history: [
+                phase_history_entry("conductor", entry.run.agent_profile, :completed)
+                | entry.run.phase_history || []
+              ]
+          }
+          |> refresh_run_runtime_evidence()
 
         put_in(state.running[id], %{entry | run: run})
     end
@@ -1162,6 +1174,7 @@ defmodule Symphony.Orchestrator do
                 ]
             }
           end
+          |> refresh_run_runtime_evidence()
 
         put_in(state.running[id], %{entry | run: run})
     end
@@ -1359,6 +1372,266 @@ defmodule Symphony.Orchestrator do
 
   defp string_or_nil(nil), do: nil
   defp string_or_nil(value), do: to_string(value)
+
+  defp initial_runtime_evidence(workspace_path) do
+    refresh_runtime_evidence_map(%{
+      workspace_path: workspace_path,
+      score_path: conductor_score_path(%{workspace_path: workspace_path}),
+      verdict_path: nil,
+      changed_files: [],
+      command_spans: [],
+      artifact_paths: [],
+      last_checked_at: DateTime.utc_now()
+    })
+  end
+
+  defp refresh_runtime_evidence(state, id) do
+    case state.running[id] do
+      nil ->
+        state
+
+      entry ->
+        put_in(state.running[id], %{entry | run: refresh_run_runtime_evidence(entry.run)})
+    end
+  end
+
+  defp refresh_run_runtime_evidence(run) do
+    evidence =
+      run
+      |> current_runtime_evidence()
+      |> Map.merge(%{
+        workspace_path: run.workspace_path,
+        score_path: run.score_path || conductor_score_path(run),
+        verdict_path: runtime_verdict_path(run)
+      })
+      |> refresh_runtime_evidence_map()
+
+    %{run | runtime_evidence: evidence}
+  end
+
+  defp current_runtime_evidence(%{runtime_evidence: evidence}) when is_map(evidence) do
+    %{
+      workspace_path: map_get(evidence, :workspace_path, nil),
+      score_path: map_get(evidence, :score_path, nil),
+      verdict_path: map_get(evidence, :verdict_path, nil),
+      changed_files: list_strings(map_get(evidence, :changed_files, [])),
+      command_spans:
+        evidence
+        |> map_get(:command_spans, [])
+        |> list_maps()
+        |> bounded_command_spans(),
+      artifact_paths: list_strings(map_get(evidence, :artifact_paths, [])),
+      last_checked_at: map_get(evidence, :last_checked_at, nil)
+    }
+  end
+
+  defp current_runtime_evidence(_),
+    do: %{
+      workspace_path: nil,
+      score_path: nil,
+      verdict_path: nil,
+      changed_files: [],
+      command_spans: [],
+      artifact_paths: [],
+      last_checked_at: nil
+    }
+
+  defp refresh_runtime_evidence_map(evidence) do
+    workspace_path = map_get(evidence, :workspace_path, nil)
+    score_path = map_get(evidence, :score_path, nil)
+    verdict_path = map_get(evidence, :verdict_path, nil)
+
+    %{
+      workspace_path: workspace_path,
+      score_path: score_path,
+      verdict_path: verdict_path,
+      changed_files: git_changed_files(workspace_path),
+      command_spans:
+        evidence
+        |> map_get(:command_spans, [])
+        |> list_maps()
+        |> bounded_command_spans(),
+      artifact_paths: runtime_artifact_paths(score_path, verdict_path, workspace_path),
+      last_checked_at: DateTime.utc_now()
+    }
+  end
+
+  defp append_runtime_command_spans(run, event, at) do
+    spans = runtime_command_spans(run, event, at)
+
+    if spans == [] do
+      run
+    else
+      evidence = current_runtime_evidence(run)
+
+      %{
+        run
+        | runtime_evidence: %{
+            evidence
+            | command_spans: bounded_command_spans(evidence.command_spans ++ spans),
+              last_checked_at: at
+          }
+      }
+    end
+  end
+
+  defp bounded_command_spans(spans), do: Enum.take(spans, -@max_command_spans)
+
+  defp runtime_command_spans(run, event, at) do
+    event_kind = map_get(event, :event, nil)
+
+    lifecycle_spans =
+      case event_kind do
+        ev when ev in ["session_started", "turn_completed", "turn_failed"] ->
+          [
+            runtime_command_span(
+              run,
+              ev,
+              event_status(ev),
+              map_get(event, :message, nil) || map_get(event, String.to_atom(ev), nil),
+              at
+            )
+          ]
+
+        _ ->
+          []
+      end
+
+    output_spans =
+      ["stdout", "stderr"]
+      |> Enum.flat_map(fn key ->
+        value = runtime_output_message(event, event_kind, key)
+
+        if present?(value) do
+          [
+            runtime_command_span(run, key, event_status(key), value, at)
+          ]
+        else
+          []
+        end
+      end)
+
+    lifecycle_spans ++ output_spans
+  end
+
+  defp runtime_output_message(event, event_kind, key) do
+    if event_kind == key do
+      map_get(event, :message, nil) || map_get(event, String.to_atom(key), nil)
+    else
+      map_get(event, String.to_atom(key), nil)
+    end
+  end
+
+  defp runtime_command_span(run, kind, status, message, at) do
+    %{
+      phase: run.phase || "build",
+      agent: agent_name(run.agent_profile),
+      kind: "runner",
+      label: runtime_span_label(kind),
+      status: status,
+      message: redacted_span_message(message),
+      at: at
+    }
+  end
+
+  defp runtime_span_label("session_started"), do: "runner session"
+  defp runtime_span_label("turn_completed"), do: "runner turn"
+  defp runtime_span_label("turn_failed"), do: "runner turn"
+  defp runtime_span_label("stdout"), do: "runner stdout"
+  defp runtime_span_label("stderr"), do: "runner stderr"
+  defp runtime_span_label(kind), do: "runner #{kind}"
+
+  defp redacted_span_message(nil), do: nil
+
+  defp redacted_span_message(message) do
+    message
+    |> to_string()
+    |> String.replace(~r/[\r\n\t]+/, " ")
+    |> String.replace(
+      ~r/([A-Za-z_][A-Za-z0-9_]*_(?:TOKEN|SECRET|KEY|PASSWORD))=[^\s]+/i,
+      "\\1=[REDACTED]"
+    )
+    |> String.slice(0, 240)
+  end
+
+  defp runtime_verdict_path(run) do
+    get_in(run.judge_verdict || %{}, [:path]) ||
+      get_in(run.judge_verdict || %{}, ["path"]) ||
+      existing_path(judge_verdict_path(run))
+  end
+
+  defp runtime_artifact_paths(score_path, verdict_path, workspace_path) do
+    [score_path, verdict_path, existing_judge_verdict_path(workspace_path)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp existing_path(nil), do: nil
+  defp existing_path(path), do: if(File.exists?(path), do: path)
+  defp existing_judge_verdict_path(nil), do: nil
+
+  defp existing_judge_verdict_path(workspace_path),
+    do: existing_path(judge_verdict_path(%{workspace_path: workspace_path}))
+
+  defp git_changed_files(nil), do: []
+
+  defp git_changed_files(workspace_path) do
+    with true <- File.dir?(workspace_path),
+         {_, 0} <-
+           safe_system_cmd(
+             "git",
+             ["-C", workspace_path, "rev-parse", "--is-inside-work-tree"],
+             2_000
+           ),
+         {output, 0} <-
+           safe_system_cmd(
+             "git",
+             ["-C", workspace_path, "status", "--porcelain", "--untracked-files=all"],
+             5_000
+           ) do
+      output
+      |> String.split("\n", trim: true)
+      |> Enum.map(&porcelain_path/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+      |> Enum.take(200)
+    else
+      _ -> []
+    end
+  rescue
+    _ -> []
+  end
+
+  defp safe_system_cmd(command, args, timeout_ms) do
+    task =
+      Task.Supervisor.async_nolink(Symphony.AgentSupervisor, fn ->
+        try do
+          System.cmd(command, args, stderr_to_stdout: true)
+        rescue
+          _ -> {"", -1}
+        end
+      end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      _ -> {"", -1}
+    end
+  rescue
+    _ -> {"", -1}
+  end
+
+  defp porcelain_path(line) when byte_size(line) > 3 do
+    line
+    |> String.slice(3..-1//1)
+    |> String.split(" -> ")
+    |> List.last()
+    |> String.trim()
+  end
+
+  defp porcelain_path(_), do: ""
+
+  defp list_maps(value) when is_list(value), do: Enum.filter(value, &is_map/1)
+  defp list_maps(_), do: []
 
   defp prepare_phase_artifacts(%{phase: "judge"} = run) do
     path = judge_verdict_path(run)

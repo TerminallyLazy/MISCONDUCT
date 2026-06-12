@@ -5,8 +5,12 @@ src-tauri/target/
 .env
 .env.*
 *.log
+.symphony-agent-stdin-*.txt
+.symphony-agent-stderr-*.log
 symphony_elixir/_build/
 symphony_elixir/deps/
+symphony_elixir/agent_profiles.json
+symphony_elixir/misconduct_workspaces/
 symphony_elixir/symphony_workspaces/
 symphony_elixir/erl_crash.dump
 src-tauri/resources/symphony_backend/*

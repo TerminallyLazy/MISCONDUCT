@@ -8,7 +8,7 @@ Download packaged builds from GitHub Releases:
 
 https://github.com/TerminallyLazy/MISCONDUCT/releases/latest
 
-Current app metadata in this checkout is `0.1.19`. The public latest release page
+Current app metadata in this checkout is `0.1.20`. The public latest release page
 is updated by pushing the matching release tag and letting the desktop workflow
 publish the new artifacts.
 
@@ -32,6 +32,19 @@ Backend source lives in `symphony_elixir/`.
 cd symphony_elixir
 mix test
 ```
+
+## Orchestration observability
+
+Movements now carry runtime evidence from intake through conductor, builder, judge,
+refiner, and finale phases. The desktop app shows the target workspace, expected
+evidence, file focus, changed files from git status, runner command spans, score
+artifacts, judge verdict artifacts, and the latest evidence refresh time on each
+movement card and ledger view.
+
+The stage remains orchestra-themed, but it is backed by a plain movement pipeline:
+musicians are assigned agent profiles, cue lines are active phase routing, notes
+are runner events, and evidence panels show whether agents actually touched files
+or produced artifacts.
 
 ## Codex auth model
 

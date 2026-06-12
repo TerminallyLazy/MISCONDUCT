@@ -99,6 +99,38 @@ defmodule Symphony.TestRunner do
     do: Path.join([workspace_path, ".symphony", "judge-verdict.json"])
 end
 
+defmodule Symphony.EvidenceSpanRunner do
+  @behaviour Symphony.AgentRunner
+
+  def run(run, _workspace, _config, orchestrator) do
+    send(orchestrator, {
+      :agent_event,
+      run.issue_id,
+      %{event: "session_started", message: "evidence span run started"}
+    })
+
+    send(orchestrator, {
+      :agent_event,
+      run.issue_id,
+      %{event: "stdout", message: "changed lib/runtime_evidence.ex API_TOKEN=secret"}
+    })
+
+    send(orchestrator, {
+      :agent_event,
+      run.issue_id,
+      %{event: "stderr", message: "validation warning"}
+    })
+
+    send(orchestrator, {
+      :agent_event,
+      run.issue_id,
+      %{event: "turn_completed", message: "span run completed"}
+    })
+
+    :ok
+  end
+end
+
 defmodule Symphony.OrchestratorPollingTest do
   use ExUnit.Case, async: false
 
@@ -184,6 +216,69 @@ defmodule Symphony.OrchestratorPollingTest do
     assert completed.status == :completed
     assert completed.issue.title == "Visible finale"
     assert completed.last_event
+  end
+
+  test "completed movements refresh runtime evidence from git status", %{dir: dir} do
+    workspace = Path.join(dir, "repo")
+    File.mkdir_p!(workspace)
+    System.cmd("git", ["init"], cd: workspace)
+    File.mkdir_p!(Path.join(workspace, "lib"))
+    File.write!(Path.join(workspace, "lib/evidence.ex"), "runtime evidence\n")
+    ensure_builder_profile()
+    {:ok, pid} = start_orchestrator(dir, poll_interval_ms: 0)
+
+    issue = %Issue{
+      id: "manual-evidence",
+      identifier: "MOV-EVIDENCE",
+      title: "Collect runtime evidence",
+      state: "Todo",
+      workspace_path: workspace,
+      repository_path: workspace
+    }
+
+    assert {:ok, run} = Orchestrator.enqueue_issue(issue, nil, pid)
+    assert run.runtime_evidence.workspace_path == workspace
+
+    assert eventually(fn ->
+             snap = Orchestrator.snapshot(pid)
+
+             Enum.any?(snap.completed_runs, fn run ->
+               run.issue_identifier == "MOV-EVIDENCE" and
+                 "lib/evidence.ex" in run.runtime_evidence.changed_files
+             end)
+           end)
+  end
+
+  test "runtime evidence captures runner stdout and stderr spans chronologically", %{dir: dir} do
+    Application.put_env(:symphony_elixir, :agent_runner, Symphony.EvidenceSpanRunner)
+    ensure_builder_profile()
+    {:ok, pid} = start_orchestrator(dir, poll_interval_ms: 0)
+
+    assert {:ok, _run} =
+             Orchestrator.enqueue_issue(
+               issue("manual-spans", "MOV-SPANS", "Capture runner spans"),
+               nil,
+               pid
+             )
+
+    assert eventually(fn ->
+             snap = Orchestrator.snapshot(pid)
+
+             Enum.any?(snap.completed_runs, fn run ->
+               labels = Enum.map(run.runtime_evidence.command_spans, & &1.label)
+               messages = Enum.map(run.runtime_evidence.command_spans, & &1.message)
+
+               run.issue_identifier == "MOV-SPANS" and
+                 labels == [
+                   "runner session",
+                   "runner stdout",
+                   "runner stderr",
+                   "runner turn"
+                 ] and
+                 "changed lib/runtime_evidence.ex API_TOKEN=[REDACTED]" in messages and
+                 List.last(labels) == "runner turn"
+             end)
+           end)
   end
 
   test "configured conductor creates a score and hands it to builder", %{dir: dir} do
@@ -525,8 +620,9 @@ defmodule Symphony.OrchestratorPollingTest do
     assert eventually(
              fn ->
                snap = Orchestrator.snapshot(pid)
+               blocked? = blocked_event?(issue, "refiner")
 
-               snap.counts.running == 0 and snap.counts.retrying == 1 and
+               blocked? and snap.counts.running == 0 and snap.counts.retrying == 1 and
                  snap.counts.completed == 0
              end,
              80

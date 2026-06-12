@@ -965,6 +965,7 @@ defmodule Symphony.Http.Api do
       tokens: run.tokens,
       score_path: run.score_path,
       score_summary: run.score_summary,
+      runtime_evidence: run.runtime_evidence,
       phase_history: run.phase_history || [],
       conversation: run.conversation || [],
       refiner_attempt: run.refiner_attempt,
@@ -1024,6 +1025,7 @@ defmodule Symphony.Http.Api do
       workspace_path: Map.get(retry, :workspace_path),
       repository_path: Map.get(retry, :repository_path),
       score_summary: Map.get(retry, :score_summary),
+      runtime_evidence: Map.get(retry, :runtime_evidence),
       phase_history: Map.get(retry, :phase_history, []),
       conversation: Map.get(retry, :conversation, []),
       judge_verdict: retry.judge_verdict,
@@ -1064,7 +1066,12 @@ defmodule Symphony.Http.Api do
         "Manual MISCONDUCT movement"
 
     identifier = manual_identifier(params, title)
-    description = string_param(params, "description") || string_param(params, "objective") || ""
+
+    description =
+      params
+      |> manual_base_description()
+      |> append_manual_evidence_sections(params)
+
     workspace_path = movement_workspace_path(params)
 
     %Issue{
@@ -1110,6 +1117,31 @@ defmodule Symphony.Http.Api do
     |> String.upcase()
     |> String.replace(~r/[^A-Z0-9._-]+/, "-")
     |> String.trim("-")
+  end
+
+  defp manual_base_description(params),
+    do: string_param(params, "description") || string_param(params, "objective") || ""
+
+  defp append_manual_evidence_sections(description, params) do
+    sections =
+      [
+        manual_list_section("Expected evidence", list_param(params, "expected_evidence")),
+        manual_list_section("Validation commands", list_param(params, "validation_commands")),
+        manual_list_section("File focus", list_param(params, "file_focus"))
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    ([description] ++ sections)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n\n")
+  end
+
+  defp manual_list_section(_title, []), do: nil
+
+  defp manual_list_section(title, values) do
+    ([title <> ":"] ++ Enum.map(values, &"- #{&1}"))
+    |> Enum.join("\n")
   end
 
   defp manual_issue_json(issue) do
