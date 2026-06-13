@@ -1,6 +1,6 @@
 {
   "productName": "MISCONDUCT",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "identifier": "dev.misconduct.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
