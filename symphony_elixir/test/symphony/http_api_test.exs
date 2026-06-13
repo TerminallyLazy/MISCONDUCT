@@ -49,6 +49,11 @@ defmodule Symphony.Http.ApiTest do
     assert card.refiner_max_attempts == 2
     assert card.operator_status == "refining"
     assert card.agent_profile_id == "workflow-refiner"
+    assert card.agent_profile_status == "running"
+    assert card.agent_profile.status == "running"
+    assert card.agent_profile.current_assignments == ["TER-REFINER"]
+    assert [%{identifier: "TER-REFINER", phase: "refiner", status: "running"}] =
+             card.agent_profile.active_assignments
     assert card.verdict == "needs_refinement"
     assert card.verdict_path == "/tmp/judge-verdict.json"
     assert card.runtime_evidence.changed_files == ["lib/example.ex"]

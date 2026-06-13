@@ -256,10 +256,85 @@ defmodule Symphony.Http.Api do
   def list_agents(conn) do
     with {:ok, profiles} <- Symphony.AgentProfileRegistry.list(),
          {:ok, metadata} <- Symphony.AgentProfileRegistry.metadata() do
-      json(conn, 200, %{profiles: profiles, count: length(profiles), storage: metadata})
+      snap = Symphony.Orchestrator.snapshot()
+      profiles = overlay_runtime_assignments(profiles, snap)
+
+      json(conn, 200, %{
+        profiles: profiles,
+        count: length(profiles),
+        storage: metadata,
+        runtime: %{
+          running: snap.counts.running,
+          retrying: snap.counts.retrying,
+          active_assignments: active_assignment_count(profiles)
+        }
+      })
     else
       {:error, reason} -> error(conn, 500, reason)
     end
+  end
+
+  defp overlay_runtime_assignments(profiles, snap) do
+    active_profiles =
+      (Enum.map(snap.running || [], &active_runtime_profile(&1, "running")) ++
+         Enum.map(snap.retrying || [], &active_runtime_profile(&1, "retrying")))
+      |> Enum.reject(&is_nil/1)
+
+    assignments =
+      active_profiles
+      |> Enum.map(& &1.assignment)
+      |> Enum.group_by(& &1.profile_id)
+
+    persisted_ids = MapSet.new(Enum.map(profiles, &profile_value(&1, :id)))
+
+    overlayed =
+      Enum.map(profiles, &profile_with_runtime_assignments(&1, assignments))
+
+    missing_active =
+      active_profiles
+      |> Enum.reject(&MapSet.member?(persisted_ids, &1.id))
+      |> Enum.map(&profile_with_runtime_assignments(&1.profile, assignments))
+
+    (overlayed ++ missing_active)
+    |> Enum.sort_by(&(profile_value(&1, :name) || profile_value(&1, :id) || ""))
+  end
+
+  defp active_runtime_profile(run, status) do
+    case runtime_assignment(run, status) do
+      nil ->
+        nil
+
+      assignment ->
+        %{
+          id: assignment.profile_id,
+          profile: active_run_agent_profile(run, status),
+          assignment: assignment
+        }
+    end
+  end
+
+  defp profile_with_runtime_assignments(profile, assignments) do
+    profile_id = profile_value(profile, :id)
+    active = Map.get(assignments, profile_id, [])
+
+    if active == [] do
+      profile
+    else
+      profile
+      |> put_profile_value(:status, runtime_profile_status(active))
+      |> put_profile_value(:current_assignments, Enum.map(active, & &1.identifier))
+      |> put_profile_value(:active_assignments, Enum.map(active, &public_runtime_assignment/1))
+    end
+  end
+
+  defp active_assignment_count(profiles) do
+    Enum.reduce(profiles, 0, fn profile, count ->
+      count + length(profile_value(profile, :active_assignments) || [])
+    end)
+  end
+
+  defp runtime_profile_status(assignments) do
+    if Enum.any?(assignments, &(&1.status == "retrying")), do: "retrying", else: "running"
   end
 
   def get_agent(conn, id) do
@@ -930,7 +1005,7 @@ defmodule Symphony.Http.Api do
 
   def run_card(run) do
     issue = run.issue || %{}
-    agent_profile = run.agent_profile || %{}
+    agent_profile = active_run_agent_profile(run, "running")
     phase = run.phase || "build"
 
     %{
@@ -948,12 +1023,12 @@ defmodule Symphony.Http.Api do
       operator_status: phase_operator_status(phase),
       operator_summary: run.last_message,
       agent_profile: agent_profile,
-      agent_profile_id: agent_profile[:id],
-      agent_name: agent_profile[:name],
-      agent_role: agent_profile[:role],
-      agent_section: agent_profile[:section],
-      instrument_name: agent_profile[:instrument_name],
-      agent_profile_status: agent_profile[:status],
+      agent_profile_id: profile_value(agent_profile, :id),
+      agent_name: profile_value(agent_profile, :name),
+      agent_role: profile_value(agent_profile, :role),
+      agent_section: profile_value(agent_profile, :section),
+      instrument_name: profile_value(agent_profile, :instrument_name),
+      agent_profile_status: profile_value(agent_profile, :status),
       workspace_path: run.workspace_path,
       repository_path: Map.get(issue, :repository_path),
       session_id: run.session_id,
@@ -997,7 +1072,7 @@ defmodule Symphony.Http.Api do
   end
 
   defp retry_card(retry) do
-    agent_profile = retry.agent_profile || %{}
+    agent_profile = active_run_agent_profile(retry, "retrying")
     phase = retry.phase || "retry"
 
     %{
@@ -1015,12 +1090,12 @@ defmodule Symphony.Http.Api do
       operator_status: "needs_attention",
       operator_summary: retry.error,
       agent_profile: agent_profile,
-      agent_profile_id: agent_profile[:id],
-      agent_name: agent_profile[:name],
-      agent_role: agent_profile[:role],
-      agent_section: agent_profile[:section],
-      instrument_name: agent_profile[:instrument_name],
-      agent_profile_status: agent_profile[:status],
+      agent_profile_id: profile_value(agent_profile, :id),
+      agent_name: profile_value(agent_profile, :name),
+      agent_role: profile_value(agent_profile, :role),
+      agent_section: profile_value(agent_profile, :section),
+      instrument_name: profile_value(agent_profile, :instrument_name),
+      agent_profile_status: profile_value(agent_profile, :status),
       score_path: Map.get(retry, :score_path),
       workspace_path: Map.get(retry, :workspace_path),
       repository_path: Map.get(retry, :repository_path),
@@ -1038,6 +1113,73 @@ defmodule Symphony.Http.Api do
       due_at: retry.due_at,
       error: retry.error
     }
+  end
+
+  defp active_run_agent_profile(run, status) do
+    profile = Map.get(run, :agent_profile) || %{}
+
+    case runtime_assignment(run, status) do
+      nil ->
+        profile
+
+      assignment ->
+        profile
+        |> put_profile_value(:status, status)
+        |> put_profile_value(:current_assignments, [assignment.identifier])
+        |> put_profile_value(:active_assignments, [public_runtime_assignment(assignment)])
+    end
+  end
+
+  defp runtime_assignment(run, status) do
+    profile = Map.get(run, :agent_profile) || %{}
+    profile_id = profile_value(profile, :id)
+
+    if present?(profile_id) do
+      %{
+        profile_id: profile_id,
+        issue_id: Map.get(run, :issue_id),
+        identifier: Map.get(run, :issue_identifier) || Map.get(run, :issue_id),
+        title: issue_title(Map.get(run, :issue), run),
+        phase: Map.get(run, :phase) || if(status == "retrying", do: "retry", else: "build"),
+        status: status,
+        last_event: Map.get(run, :last_event),
+        last_message: Map.get(run, :last_message) || Map.get(run, :error),
+        workspace_path: Map.get(run, :workspace_path),
+        score_path: Map.get(run, :score_path),
+        session_id: Map.get(run, :session_id),
+        started_at: Map.get(run, :started_at),
+        last_event_at: Map.get(run, :last_event_at)
+      }
+    end
+  end
+
+  defp public_runtime_assignment(assignment) do
+    assignment
+    |> Map.drop([:profile_id])
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp issue_title(issue, run) when is_map(issue),
+    do: Map.get(issue, :title) || Map.get(issue, "title") || Map.get(run, :issue_identifier) || Map.get(run, :issue_id)
+
+  defp issue_title(_issue, run),
+    do: Map.get(run, :title) || Map.get(run, :issue_identifier) || Map.get(run, :issue_id)
+
+  defp profile_value(profile, key) when is_map(profile),
+    do: Map.get(profile, key) || Map.get(profile, to_string(key))
+
+  defp profile_value(_profile, _key), do: nil
+
+  defp put_profile_value(profile, key, value) when is_map(profile) do
+    map_key =
+      cond do
+        Map.has_key?(profile, key) -> key
+        Map.has_key?(profile, to_string(key)) -> to_string(key)
+        true -> key
+      end
+
+    Map.put(profile, map_key, value)
   end
 
   defp find_issue(id) do

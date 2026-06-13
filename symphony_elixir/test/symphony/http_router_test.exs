@@ -18,6 +18,21 @@ defmodule Symphony.HttpRouterTestRunner do
   end
 end
 
+defmodule Symphony.HttpRouterBlockingTestRunner do
+  @behaviour Symphony.AgentRunner
+
+  def run(run, _workspace, _config, orchestrator) do
+    send(orchestrator, {
+      :agent_event,
+      run.issue_id,
+      %{event: "session_started", message: "blocking router test movement accepted"}
+    })
+
+    Process.sleep(2_000)
+    :ok
+  end
+end
+
 defmodule Symphony.Http.RouterTest do
   use ExUnit.Case, async: false
 
@@ -111,6 +126,55 @@ defmodule Symphony.Http.RouterTest do
     assert body["movement"]["description"] =~ "File focus:"
     assert body["movement"]["description"] =~ "- symphony_elixir/lib/symphony/http/api.ex"
     assert body["run"]["title"] == "Rehearse optional tracker workflow"
+  end
+
+  test "agent profile list overlays active movement assignments" do
+    old_runner = Application.get_env(:symphony_elixir, :agent_runner)
+    old_key = System.get_env("LINEAR_API_KEY")
+    old_project = System.get_env("LINEAR_PROJECT_SLUG")
+
+    on_exit(fn ->
+      restore_app_env(:agent_runner, old_runner)
+      restore_env("LINEAR_API_KEY", old_key)
+      restore_env("LINEAR_PROJECT_SLUG", old_project)
+    end)
+
+    Application.put_env(:symphony_elixir, :agent_runner, Symphony.HttpRouterBlockingTestRunner)
+    System.delete_env("LINEAR_API_KEY")
+    System.delete_env("LINEAR_PROJECT_SLUG")
+
+    conn =
+      conn(
+        :post,
+        "/api/movements",
+        Jason.encode!(%{
+          title: "Keep profile assignment visible",
+          description: "Prove stage profiles reflect active runtime assignment."
+        })
+      )
+      |> put_req_header("content-type", "application/json")
+      |> Symphony.Http.Router.call([])
+
+    assert conn.status == 202
+    body = Jason.decode!(conn.resp_body)
+    run = body["run"]
+    identifier = run["identifier"]
+
+    conn = conn(:get, "/api/agents") |> Symphony.Http.Router.call([])
+    assert conn.status == 200
+    agents = Jason.decode!(conn.resp_body)["profiles"]
+
+    active_profile =
+      Enum.find(agents, fn profile ->
+        identifier in (profile["current_assignments"] || [])
+      end)
+
+    assert active_profile
+    assert active_profile["status"] == "running"
+    assert [%{"identifier" => ^identifier, "status" => "running"}] =
+             active_profile["active_assignments"]
+
+    Symphony.Orchestrator.cancel(run["issue_id"])
   end
 
   test "agent profile API creates, lists, updates, and deletes profiles" do

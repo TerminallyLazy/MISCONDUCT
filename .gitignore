@@ -5,6 +5,7 @@ src-tauri/target/
 .env
 .env.*
 *.log
+.symphony/
 .symphony-agent-stdin-*.txt
 .symphony-agent-stderr-*.log
 symphony_elixir/_build/
