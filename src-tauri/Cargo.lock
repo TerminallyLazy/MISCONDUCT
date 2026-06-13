@@ -2012,7 +2012,7 @@ dependencies = [
 
 [[package]]
 name = "misconduct_desktop"
-version = "0.1.20"
+version = "0.1.21"
 dependencies = [
  "flate2",
  "serde",

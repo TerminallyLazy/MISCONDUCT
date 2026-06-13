@@ -8,7 +8,7 @@ Download packaged builds from GitHub Releases:
 
 https://github.com/TerminallyLazy/MISCONDUCT/releases/latest
 
-Current app metadata in this checkout is `0.1.20`. The public latest release page
+Current app metadata in this checkout is `0.1.21`. The public latest release page
 is updated by pushing the matching release tag and letting the desktop workflow
 publish the new artifacts.
 
