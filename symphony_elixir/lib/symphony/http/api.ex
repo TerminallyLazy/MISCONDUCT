@@ -319,6 +319,9 @@ defmodule Symphony.Http.Api do
 
     if active == [] do
       profile
+      |> put_profile_value(:status, inactive_runtime_status(profile_value(profile, :status)))
+      |> put_profile_value(:current_assignments, [])
+      |> put_profile_value(:active_assignments, [])
     else
       profile
       |> put_profile_value(:status, runtime_profile_status(active))
@@ -329,13 +332,19 @@ defmodule Symphony.Http.Api do
 
   defp active_assignment_count(profiles) do
     Enum.reduce(profiles, 0, fn profile, count ->
-      count + length(profile_value(profile, :active_assignments) || [])
+      case profile_value(profile, :active_assignments) do
+        active_assignments when is_list(active_assignments) -> count + length(active_assignments)
+        _ -> count
+      end
     end)
   end
 
   defp runtime_profile_status(assignments) do
     if Enum.any?(assignments, &(&1.status == "retrying")), do: "retrying", else: "running"
   end
+
+  defp inactive_runtime_status(status) when status in [nil, "running", "retrying"], do: "idle"
+  defp inactive_runtime_status(status), do: status
 
   def get_agent(conn, id) do
     case Symphony.AgentProfileRegistry.get(id) do
@@ -1003,9 +1012,11 @@ defmodule Symphony.Http.Api do
     do:
       "#{snap.counts.running} running, #{snap.counts.retrying} retrying, #{snap.counts.completed} completed"
 
-  def run_card(run) do
+  def run_card(run), do: run_card(run, run_runtime_status(run))
+
+  defp run_card(run, runtime_status) do
     issue = run.issue || %{}
-    agent_profile = active_run_agent_profile(run, "running")
+    agent_profile = active_run_agent_profile(run, runtime_status)
     phase = run.phase || "build"
 
     %{
@@ -1060,9 +1071,18 @@ defmodule Symphony.Http.Api do
   defp phase_operator_status("conductor"), do: "conducting"
   defp phase_operator_status(_), do: "running"
 
+  defp run_runtime_status(run) do
+    case Map.get(run, :status) do
+      nil -> "running"
+      status when is_atom(status) -> Atom.to_string(status)
+      status when is_binary(status) -> status
+      _ -> "running"
+    end
+  end
+
   defp completed_card(run) do
     run
-    |> run_card()
+    |> run_card("completed")
     |> Map.merge(%{
       state: "Completed",
       status: "completed",
@@ -1115,7 +1135,7 @@ defmodule Symphony.Http.Api do
     }
   end
 
-  defp active_run_agent_profile(run, status) do
+  defp active_run_agent_profile(run, status) when status in ["running", "retrying"] do
     profile = Map.get(run, :agent_profile) || %{}
 
     case runtime_assignment(run, status) do
@@ -1128,6 +1148,13 @@ defmodule Symphony.Http.Api do
         |> put_profile_value(:current_assignments, [assignment.identifier])
         |> put_profile_value(:active_assignments, [public_runtime_assignment(assignment)])
     end
+  end
+
+  defp active_run_agent_profile(run, status) do
+    (Map.get(run, :agent_profile) || %{})
+    |> put_profile_value(:status, status)
+    |> put_profile_value(:current_assignments, [])
+    |> put_profile_value(:active_assignments, [])
   end
 
   defp runtime_assignment(run, status) do
@@ -1161,7 +1188,9 @@ defmodule Symphony.Http.Api do
   end
 
   defp issue_title(issue, run) when is_map(issue),
-    do: Map.get(issue, :title) || Map.get(issue, "title") || Map.get(run, :issue_identifier) || Map.get(run, :issue_id)
+    do:
+      Map.get(issue, :title) || Map.get(issue, "title") || Map.get(run, :issue_identifier) ||
+        Map.get(run, :issue_id)
 
   defp issue_title(_issue, run),
     do: Map.get(run, :title) || Map.get(run, :issue_identifier) || Map.get(run, :issue_id)

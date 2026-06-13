@@ -538,7 +538,7 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
 .runtimeLegend b { color: var(--ink); }
 .movementObservatory {
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
   background: #fff8e8;
   display: grid;
   grid-template-rows: auto 1fr;
@@ -567,7 +567,8 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
 .observatoryBody {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(320px, .78fr) minmax(520px, 1.22fr);
+  min-width: 0;
+  grid-template-columns: minmax(0, .78fr) minmax(0, 1.22fr);
   gap: 0;
 }
 .movementPipeline {

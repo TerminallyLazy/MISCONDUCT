@@ -497,26 +497,7 @@ function makeIdleMusicians(profiles: AgentProfile[], liveCards: Card[]): IdleMus
 
 function runtimeAssignmentsFromProfile(profile: AgentProfile): RuntimeAssignment[] {
   const assignments = Array.isArray(profile.active_assignments) ? profile.active_assignments : [];
-  return assignments
-    .map<RuntimeAssignment | null>(item => {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
-      const record = item as Record<string, unknown>;
-      return {
-        issue_id: stringField(record, 'issue_id') || undefined,
-        identifier: stringField(record, 'identifier') || undefined,
-        title: stringField(record, 'title') || undefined,
-        phase: stringField(record, 'phase') || undefined,
-        status: stringField(record, 'status') || undefined,
-        last_event: stringField(record, 'last_event') || undefined,
-        last_message: stringField(record, 'last_message') || undefined,
-        workspace_path: stringField(record, 'workspace_path') || undefined,
-        score_path: stringField(record, 'score_path') || undefined,
-        session_id: stringField(record, 'session_id') || undefined,
-        started_at: stringField(record, 'started_at') || undefined,
-        last_event_at: stringField(record, 'last_event_at') || undefined
-      };
-    })
-    .filter((item): item is RuntimeAssignment => Boolean(item));
+  return runtimeAssignmentsFromRaw(assignments);
 }
 
 function normalizeColumn(title: string) {
@@ -1338,8 +1319,19 @@ function communicationParticipants(card: Card): CommunicationParticipant[] {
   ];
 }
 
-function latestCommunicationItem(card: Card) {
-  return communicationTimelineForCard(card).at(-1);
+function latestPipelineCommunication(card: Card): Pick<CommunicationTimelineItem, 'from' | 'to'> | undefined {
+  const message = card.conversation.at(-1);
+  if (message) return { from: message.from, to: message.to };
+
+  const span = card.runtimeEvidence.commandSpans.at(-1);
+  if (span) return { from: span.agent || phaseAgentLabel(span.phase || card.phase || card.stage), to: 'Workflow Conductor' };
+
+  const phase = card.phaseHistory.at(-1);
+  if (phase) return { from: 'Workflow Conductor', to: phase.agent || phaseAgentLabel(phase.phase || card.phase || card.stage) };
+
+  if (card.description) return { from: 'Operator', to: 'Workflow Conductor' };
+
+  return undefined;
 }
 
 function operatorInspectNext(card: Card) {
@@ -2602,7 +2594,7 @@ function MovementPipeline({ cards, selectedCardId, onSelect }: { cards: Card[]; 
         {cards.length ? cards.map(card => {
           const health = evidenceHealth(card);
           const workspace = card.runtimeEvidence.workspacePath || card.workspacePath || card.workspaceTarget || card.repositoryPath || 'managed workspace';
-          const latestCommunication = latestCommunicationItem(card);
+          const latestCommunication = latestPipelineCommunication(card);
           return (
             <button key={card.id} className={card.id === selectedCardId ? 'pipelineRow selected' : 'pipelineRow'} onClick={() => onSelect(card.id)}>
               <div>
@@ -2752,9 +2744,14 @@ function MovementSongPanel({ card }: { card: Card }) {
 
   const copyScore = async () => {
     if (!navigator.clipboard) return;
-    await navigator.clipboard.writeText(scoreText);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1400);
+
+    try {
+      await navigator.clipboard.writeText(scoreText);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch (err) {
+      console.error('Failed to copy score to clipboard:', err);
+    }
   };
 
   return (
@@ -2869,10 +2866,30 @@ function movementScoreText(card: Card, notes: MovementSongNote[]) {
   ].join('\n');
 }
 
+let movementCueContext: AudioContext | null = null;
+let movementCueCloseTimer: number | null = null;
+
+function stopMovementCuePlayback() {
+  if (movementCueCloseTimer !== null) {
+    window.clearTimeout(movementCueCloseTimer);
+    movementCueCloseTimer = null;
+  }
+
+  if (movementCueContext) {
+    const ctx = movementCueContext;
+    movementCueContext = null;
+    void ctx.close().catch(() => undefined);
+  }
+}
+
 function playMovementCue(card: Card) {
   const AudioCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioCtor) return;
+
+  stopMovementCuePlayback();
+
   const ctx = new AudioCtor();
+  movementCueContext = ctx;
   const master = ctx.createGain();
   master.gain.value = 0.22;
   master.connect(ctx.destination);
@@ -2889,7 +2906,13 @@ function playMovementCue(card: Card) {
       pan: notes.length <= 1 ? 0 : -0.7 + (index / (notes.length - 1)) * 1.4
     });
   });
-  window.setTimeout(() => void ctx.close(), Math.max(900, notes.length * 150 + 800));
+  movementCueCloseTimer = window.setTimeout(() => {
+    if (movementCueContext === ctx) {
+      movementCueContext = null;
+      movementCueCloseTimer = null;
+      void ctx.close().catch(() => undefined);
+    }
+  }, Math.max(900, notes.length * 150 + 800));
 }
 
 function CueLines({ cards }: { cards: Card[] }) {

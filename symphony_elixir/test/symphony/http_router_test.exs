@@ -28,8 +28,11 @@ defmodule Symphony.HttpRouterBlockingTestRunner do
       %{event: "session_started", message: "blocking router test movement accepted"}
     })
 
-    Process.sleep(2_000)
-    :ok
+    receive do
+      :release -> :ok
+    after
+      30_000 -> :ok
+    end
   end
 end
 
@@ -160,21 +163,24 @@ defmodule Symphony.Http.RouterTest do
     run = body["run"]
     identifier = run["identifier"]
 
-    conn = conn(:get, "/api/agents") |> Symphony.Http.Router.call([])
-    assert conn.status == 200
-    agents = Jason.decode!(conn.resp_body)["profiles"]
+    try do
+      conn = conn(:get, "/api/agents") |> Symphony.Http.Router.call([])
+      assert conn.status == 200
+      agents = Jason.decode!(conn.resp_body)["profiles"]
 
-    active_profile =
-      Enum.find(agents, fn profile ->
-        identifier in (profile["current_assignments"] || [])
-      end)
+      active_profile =
+        Enum.find(agents, fn profile ->
+          identifier in (profile["current_assignments"] || [])
+        end)
 
-    assert active_profile
-    assert active_profile["status"] == "running"
-    assert [%{"identifier" => ^identifier, "status" => "running"}] =
-             active_profile["active_assignments"]
+      assert active_profile
+      assert active_profile["status"] == "running"
 
-    Symphony.Orchestrator.cancel(run["issue_id"])
+      assert [%{"identifier" => ^identifier, "status" => "running"}] =
+               active_profile["active_assignments"]
+    after
+      Symphony.Orchestrator.cancel(run["issue_id"])
+    end
   end
 
   test "agent profile API creates, lists, updates, and deletes profiles" do
