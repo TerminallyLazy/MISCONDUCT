@@ -116,9 +116,19 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
 .contentArea { flex: 1; min-height: 0; overflow: hidden; }
 
 .orchestraDeck { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(640px, 1fr) 330px; gap: 12px; }
-.orchestraMainColumn { min-height: 0; display: grid; grid-template-rows: minmax(400px, .72fr) minmax(420px, .88fr); gap: 12px; overflow: hidden; }
+.orchestraMainColumn {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) clamp(150px, 17vh, 190px);
+  gap: 12px;
+  overflow: hidden;
+}
+.orchestraMainColumn.observatoryExpanded {
+  grid-template-rows: minmax(390px, .52fr) minmax(420px, .9fr);
+  overflow: auto;
+}
 .stageMap {
-  position: relative; overflow: hidden; min-height: 430px;
+  position: relative; overflow: hidden; min-height: 390px;
   background:
     linear-gradient(180deg, rgba(255,250,226,.72), rgba(255,250,226,0) 34%),
     linear-gradient(135deg, #fff0b8 0 16%, #c75555 16% 18%, #3b1931 18% 100%);
@@ -543,6 +553,9 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
   display: grid;
   grid-template-rows: auto 1fr;
 }
+.movementObservatory.compact {
+  overflow: hidden;
+}
 .observatoryHeader {
   display: flex;
   align-items: flex-start;
@@ -552,7 +565,13 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
   border-bottom: 3px solid var(--ink);
 }
 .observatoryHeader h2 { margin: 2px 0 0; font-size: 23px; }
-.observatoryHeader > span {
+.observatoryControls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.observatoryControls > span {
   flex: 0 0 auto;
   display: inline-flex;
   min-height: 28px;
@@ -564,12 +583,27 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
   font-weight: 900;
   text-transform: uppercase;
 }
+.observatoryToggle {
+  min-height: 28px;
+  padding: 3px 7px;
+  box-shadow: 3px 3px 0 #0002;
+}
 .observatoryBody {
   min-height: 0;
   display: grid;
   min-width: 0;
   grid-template-columns: minmax(0, .78fr) minmax(0, 1.22fr);
   gap: 0;
+}
+.movementObservatory.compact .observatoryHeader {
+  align-items: center;
+  padding: 7px 10px;
+}
+.movementObservatory.compact .observatoryHeader h2 {
+  font-size: 17px;
+}
+.movementObservatory.compact .observatoryBody {
+  grid-template-columns: minmax(290px, .92fr) minmax(360px, 1.08fr);
 }
 .movementPipeline {
   min-height: 0;
@@ -618,6 +652,26 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
 .pipelineRow b { font-size: 12px; }
 .pipelineRow span, .pipelineRow small { color: var(--muted); font-size: 11px; line-height: 1.3; }
 .pipelineEvidence { display: grid; gap: 5px; justify-items: start; }
+.movementObservatory.compact .movementPipeline {
+  grid-template-rows: 1fr;
+}
+.movementObservatory.compact .pipelineHeader {
+  display: none;
+}
+.movementObservatory.compact .pipelineRows {
+  align-content: start;
+  gap: 6px;
+  padding: 8px;
+}
+.movementObservatory.compact .pipelineRow {
+  grid-template-columns: minmax(115px, .75fr) minmax(130px, .8fr) minmax(150px, 1fr) auto;
+  gap: 7px;
+  padding: 7px;
+  box-shadow: 2px 2px 0 #0002;
+}
+.movementObservatory.compact .pipelineEvidence small {
+  display: none;
+}
 .pipelineEmpty {
   border: 3px dashed rgba(43, 31, 58, .45);
   background: #fff2c7;
@@ -632,6 +686,10 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
   display: grid;
   grid-template-rows: auto auto auto 1fr;
   background: #fffdf5;
+}
+.movementObservatory.compact .observatoryDetail {
+  grid-template-rows: 1fr;
+  overflow: auto;
 }
 .observatoryDetail.empty {
   place-content: center;
@@ -654,6 +712,17 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
   line-height: 1.15;
   overflow-wrap: anywhere;
 }
+.movementObservatory.compact .observatoryTitle {
+  align-items: center;
+  padding: 8px 10px;
+}
+.movementObservatory.compact .observatoryTitle h3 {
+  max-width: 100%;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .observabilityMetrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -661,6 +730,9 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
   padding: 10px 12px;
   border-bottom: 3px solid var(--ink);
   background: #eef7f5;
+}
+.movementObservatory.compact .observabilityMetrics {
+  display: none;
 }
 .observabilityMetrics div {
   min-width: 0;
@@ -707,6 +779,10 @@ code { color: #584174; background: #fff2bd; padding: 1px 5px; border: 2px solid 
 }
 .observabilityTabs button:last-child { border-right: 0; }
 .observabilityTabs button.active { background: #fff0bd; color: var(--ink); }
+.movementObservatory.compact .observabilityTabs,
+.movementObservatory.compact .observabilityPane {
+  display: none;
+}
 .observabilityPane {
   min-height: 0;
   overflow: auto;
@@ -1427,11 +1503,19 @@ textarea.tall { min-height: 150px; }
 .eventDot.success { background: var(--green); }
 .eventDot.review { background: var(--purple); }
 @media (max-width: 1380px) {
-  .orchestraDeck { grid-template-columns: 1fr; overflow: auto; }
-  .orchestraMainColumn { overflow: visible; }
+  .orchestraDeck {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(620px, auto) minmax(520px, auto);
+    overflow: auto;
+  }
+  .orchestraMainColumn { min-height: 620px; overflow: hidden; }
+  .orchestraMainColumn.observatoryExpanded { overflow: auto; }
   .scoreConsole { min-height: 520px; }
   .observatoryBody { grid-template-columns: 1fr; }
   .movementPipeline { border-right: 0; border-bottom: 3px solid var(--ink); max-height: 300px; }
+  .movementObservatory.compact .observatoryBody { grid-template-columns: 1fr; }
+  .movementObservatory.compact .observatoryDetail { display: none; }
+  .movementObservatory.compact .movementPipeline { border-bottom: 0; max-height: none; }
   .transcriptGrid { grid-template-columns: 1fr; }
   .transcriptGrid .wide { grid-column: auto; }
   .pipelineRow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1441,7 +1525,8 @@ textarea.tall { min-height: 150px; }
 }
 
 @media (max-width: 640px) {
-  .orchestraMainColumn { grid-template-rows: minmax(480px, auto) auto; }
+  .orchestraMainColumn { grid-template-rows: minmax(430px, auto) minmax(170px, auto); }
+  .orchestraMainColumn.observatoryExpanded { grid-template-rows: minmax(360px, auto) minmax(420px, auto); }
   .observatoryHeader, .observatoryTitle, .songControls {
     grid-template-columns: 1fr;
     flex-direction: column;

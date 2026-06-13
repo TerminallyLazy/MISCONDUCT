@@ -32,7 +32,9 @@ import {
   FileCode2,
   SlidersHorizontal,
   PauseCircle,
-  Mic2
+  Mic2,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import { z } from 'zod';
 import { invoke } from '@tauri-apps/api/core';
@@ -2404,10 +2406,11 @@ function OrchestraFloor({
     ])
   );
   const movements = movementSummary(cards);
+  const [observatoryExpanded, setObservatoryExpanded] = useState(false);
 
   return (
     <div className="orchestraDeck">
-      <div className="orchestraMainColumn">
+      <div className={observatoryExpanded ? 'orchestraMainColumn observatoryExpanded' : 'orchestraMainColumn'}>
         <section className="stageMap pixelPanel" aria-label="Animated orchestra floor">
           <div className="stageBackdrop" aria-hidden="true">
             <div className="operaCurtain curtainLeft" />
@@ -2459,7 +2462,14 @@ function OrchestraFloor({
           {idleMusicians.map((musician, index) => <IdleMusicianCard key={musician.id} musician={musician} index={index} />)}
           <FloatingNotes cards={cards} />
         </section>
-        <MovementObservatory cards={cards} selectedCardId={selectedCardId} onSelect={setSelectedCardId} liveEvents={liveEvents} />
+        <MovementObservatory
+          cards={cards}
+          selectedCardId={selectedCardId}
+          onSelect={setSelectedCardId}
+          liveEvents={liveEvents}
+          expanded={observatoryExpanded}
+          onExpandedChange={setObservatoryExpanded}
+        />
       </div>
       <ScoreConsole
         selectedCard={selectedCard}
@@ -2519,24 +2529,39 @@ function MovementObservatory({
   cards,
   selectedCardId,
   onSelect,
-  liveEvents
+  liveEvents,
+  expanded,
+  onExpandedChange
 }: {
   cards: Card[];
   selectedCardId: string | null;
   onSelect: (id: string) => void;
   liveEvents: OrchestrationEvent[];
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
 }) {
   const [tab, setTab] = useState<ObservatoryTab>('transcript');
   const selectedCard = cards.find(card => card.id === selectedCardId) || cards[0];
+  const ToggleIcon = expanded ? Minimize2 : Maximize2;
 
   return (
-    <section className="movementObservatory pixelPanel" aria-label="Movement observatory">
+    <section className={expanded ? 'movementObservatory pixelPanel expanded' : 'movementObservatory pixelPanel compact'} aria-label="Movement observatory">
       <div className="observatoryHeader">
         <div>
           <p className="eyebrow">Operations view</p>
           <h2>Movement observatory</h2>
         </div>
-        <span>{cards.length} active</span>
+        <div className="observatoryControls">
+          <span>{cards.length} active</span>
+          <button
+            className="button secondary compact observatoryToggle"
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => onExpandedChange(!expanded)}
+          >
+            <ToggleIcon size={14} />{expanded ? 'Collapse' : 'Expand'}
+          </button>
+        </div>
       </div>
       <div className="observatoryBody">
         <MovementPipeline cards={cards} selectedCardId={selectedCard?.id || selectedCardId} onSelect={onSelect} />
