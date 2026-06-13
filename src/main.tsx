@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Clock,
   Command,
+  Clipboard,
   GitBranch,
   RefreshCw,
   ShieldAlert,
@@ -28,6 +29,7 @@ import {
   Sparkles,
   Volume2,
   FileText,
+  FileCode2,
   SlidersHorizontal,
   PauseCircle,
   Mic2
@@ -135,6 +137,7 @@ const AgentProfileSchema = z.object({
   max_concurrent_tasks: z.number().default(1),
   status: z.string().default('idle'),
   current_assignments: z.array(z.string()).default([]),
+  active_assignments: z.array(z.any()).default([]),
   assignment_policy: z.any().optional(),
   music: z.any().optional(),
   stage_position: z.any().optional(),
@@ -170,6 +173,20 @@ type PhaseHistoryEntry = {
   status?: string;
   agent?: string;
 };
+type RuntimeAssignment = {
+  issue_id?: string;
+  identifier?: string;
+  title?: string;
+  phase?: string;
+  status?: string;
+  last_event?: string;
+  last_message?: string;
+  workspace_path?: string;
+  score_path?: string;
+  session_id?: string;
+  started_at?: string;
+  last_event_at?: string;
+};
 type IdleMusician = {
   id: string;
   profile: AgentProfile;
@@ -179,8 +196,9 @@ type IdleMusician = {
   instrumentName: string;
   music?: MusicProfile;
   stagePosition?: StagePosition;
-  status: 'idle' | 'disabled';
-  movement: 'Intermission · Idle';
+  status: 'idle' | 'disabled' | 'running' | 'retrying';
+  movement: string;
+  activeAssignments: RuntimeAssignment[];
   intensity: 10;
 };
 const WorkflowTemplateSchema = z.object({
@@ -242,12 +260,14 @@ type Card = {
   backendId: string;
   identifier: string;
   title: string;
+  description?: string;
   column: string;
   status: string;
   agent: string;
   agentProfileId?: string;
   agentRole?: string;
   agentProfileStatus?: string;
+  activeAssignments?: RuntimeAssignment[];
   phase?: string;
   stage?: string;
   turns: number;
@@ -302,6 +322,25 @@ type RuntimeEvidence = {
   commandSpans: RuntimeCommandSpan[];
   artifactPaths: string[];
   lastCheckedAt?: string;
+};
+type CommunicationTimelineItem = {
+  id: string;
+  at?: string;
+  from: string;
+  to: string;
+  phase: string;
+  kind: string;
+  summary: string;
+  evidence: string;
+  inspect: string;
+  tone: string;
+};
+type CommunicationParticipant = {
+  id: string;
+  label: string;
+  detail: string;
+  status: string;
+  tone: string;
 };
 
 const columns = ['Ready', 'In Progress', 'Human Review', 'Retry', 'Blocked', 'Done'];
@@ -425,6 +464,7 @@ function emptyAgentProfile(): AgentProfile {
     max_concurrent_tasks: 1,
     status: 'idle',
     current_assignments: [],
+    active_assignments: [],
     music: { motif: 'Solo entrance', dynamic: 'mezzo-piano', register: 'middle' },
     stage_position: { section: 'strings', seat: 'front-center' }
   });
@@ -435,19 +475,29 @@ function makeIdleMusicians(profiles: AgentProfile[], liveCards: Card[]): IdleMus
   const activeNames = new Set(liveCards.map(card => card.agent.toLowerCase()));
   return profiles
     .filter(profile => !activeProfileIds.has(profile.id) && !activeNames.has(profile.name.toLowerCase()))
-    .map(profile => ({
-      id: `profile-${profile.id}`,
-      profile,
-      agent: profile.name,
-      role: profile.role,
-      section: profile.section,
-      instrumentName: profile.instrument_name,
-      music: musicProfile(profile.music),
-      stagePosition: stagePosition(profile.stage_position),
-      status: profile.enabled ? 'idle' as const : 'disabled' as const,
-      movement: 'Intermission · Idle' as const,
-      intensity: 10 as const
-    }));
+    .map(profile => {
+      const activeAssignments = runtimeAssignmentsFromProfile(profile);
+      const activeStatus = profile.status === 'retrying' ? 'retrying' : profile.status === 'running' || activeAssignments.length ? 'running' : null;
+      return {
+        id: `profile-${profile.id}`,
+        profile,
+        agent: profile.name,
+        role: profile.role,
+        section: profile.section,
+        instrumentName: profile.instrument_name,
+        music: musicProfile(profile.music),
+        stagePosition: stagePosition(profile.stage_position),
+        status: profile.enabled ? (activeStatus || 'idle') as IdleMusician['status'] : 'disabled' as const,
+        movement: activeAssignments[0]?.identifier ? `Assigned · ${activeAssignments[0].identifier}` : 'Intermission · Idle',
+        activeAssignments,
+        intensity: 10 as const
+      };
+    });
+}
+
+function runtimeAssignmentsFromProfile(profile: AgentProfile): RuntimeAssignment[] {
+  const assignments = Array.isArray(profile.active_assignments) ? profile.active_assignments : [];
+  return runtimeAssignmentsFromRaw(assignments);
 }
 
 function normalizeColumn(title: string) {
@@ -860,6 +910,7 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
         backendId,
         identifier,
         title: raw.title || raw.operator_summary || raw.last_message || raw.error || 'Agent session',
+        description: stringField(rawRecord, 'description'),
         column: normalizedColumn,
         status,
         agent,
@@ -869,6 +920,7 @@ function makeCardsFromKanban(kanban?: KanbanState): Card[] {
         agentProfileId: assignedProfile?.id || stringField(rawRecord, 'agent_profile_id'),
         agentRole: assignedProfile?.role || stringField(rawRecord, 'agent_role'),
         agentProfileStatus: assignedProfile?.status || stringField(rawRecord, 'agent_profile_status'),
+        activeAssignments: assignedProfile?.active_assignments,
         phase,
         stage: stringField(rawRecord, 'stage') || phase,
         message: raw.operator_summary || raw.last_message || raw.error || undefined,
@@ -964,9 +1016,33 @@ function agentProfileFromCard(raw: z.infer<typeof KanbanCardSchema>) {
     status: stringField(value, 'status') || 'idle',
     section: stringField(value, 'section') || 'Strings',
     instrument_name: stringField(value, 'instrument_name') || stringField(value, 'instrumentName') || 'Violin',
+    active_assignments: Array.isArray(value.active_assignments) ? runtimeAssignmentsFromRaw(value.active_assignments) : [],
     music: value.music,
     stage_position: value.stage_position || value.stagePosition
   };
+}
+
+function runtimeAssignmentsFromRaw(assignments: unknown[]): RuntimeAssignment[] {
+  return assignments
+    .map<RuntimeAssignment | null>(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+      const record = item as Record<string, unknown>;
+      return {
+        issue_id: stringField(record, 'issue_id') || undefined,
+        identifier: stringField(record, 'identifier') || undefined,
+        title: stringField(record, 'title') || undefined,
+        phase: stringField(record, 'phase') || undefined,
+        status: stringField(record, 'status') || undefined,
+        last_event: stringField(record, 'last_event') || undefined,
+        last_message: stringField(record, 'last_message') || undefined,
+        workspace_path: stringField(record, 'workspace_path') || undefined,
+        score_path: stringField(record, 'score_path') || undefined,
+        session_id: stringField(record, 'session_id') || undefined,
+        started_at: stringField(record, 'started_at') || undefined,
+        last_event_at: stringField(record, 'last_event_at') || undefined
+      };
+    })
+    .filter((item): item is RuntimeAssignment => Boolean(item));
 }
 
 function conversationFromCard(raw: Record<string, unknown>): AgentConversationMessage[] {
@@ -1083,6 +1159,219 @@ function stringListField(value: Record<string, unknown>, key: string) {
 
 function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.map(value => value.trim()).filter(Boolean)));
+}
+
+function communicationTimelineForCard(card: Card): CommunicationTimelineItem[] {
+  const currentPhase = card.phase || card.stage || 'runtime';
+  const items: CommunicationTimelineItem[] = [];
+  const push = (item: Omit<CommunicationTimelineItem, 'id' | 'tone'> & { tone?: string }) => {
+    if (!item.summary.trim()) return;
+    const combined = `${item.kind} ${item.phase} ${item.summary}`;
+    items.push({
+      ...item,
+      id: `${item.evidence}-${items.length}`,
+      tone: item.tone || communicationTone(combined)
+    });
+  };
+
+  if (card.description) {
+    push({
+      from: 'Operator',
+      to: 'Workflow Conductor',
+      phase: 'intake',
+      kind: 'brief',
+      summary: firstLine(card.description),
+      evidence: 'card.description',
+      inspect: 'Accepted movement brief, expected evidence, validation commands, and file focus.'
+    });
+  }
+
+  card.phaseHistory.forEach(entry => {
+    const phase = entry.phase || currentPhase;
+    const agent = entry.agent || phaseAgentLabel(phase);
+    const status = entry.status || 'observed';
+    push({
+      at: entry.at,
+      from: 'Workflow Conductor',
+      to: agent,
+      phase,
+      kind: 'phase',
+      summary: `${phaseAgentLabel(phase)} ${status}.`,
+      evidence: 'phase_history',
+      inspect: agent === phaseAgentLabel(phase) ? `${phaseAgentLabel(phase)} phase state.` : `${agent} assignment for ${phaseAgentLabel(phase)}.`
+    });
+  });
+
+  card.conversation.forEach(message => {
+    push({
+      at: message.at,
+      from: message.from,
+      to: message.to,
+      phase: message.stage || currentPhase,
+      kind: message.kind || 'message',
+      summary: message.message,
+      evidence: 'conversation',
+      inspect: `${message.from} to ${message.to} handoff/message in ${phaseAgentLabel(message.stage || currentPhase)}.`
+    });
+  });
+
+  card.runtimeEvidence.commandSpans.forEach(span => {
+    const phase = span.phase || currentPhase;
+    const summary = span.message ? `${span.label}: ${span.message}` : span.label;
+    push({
+      at: span.at,
+      from: span.agent || phaseAgentLabel(phase),
+      to: 'Workflow Conductor',
+      phase,
+      kind: span.kind || 'runner',
+      summary,
+      evidence: 'runtime_evidence.command_spans',
+      inspect: `${span.status} span from ${span.agent || phaseAgentLabel(phase)}.`
+    });
+  });
+
+  card.runtimeEvidence.changedFiles.slice(-8).forEach(file => {
+    push({
+      at: card.runtimeEvidence.lastCheckedAt,
+      from: 'Builder',
+      to: 'Operator',
+      phase: 'build',
+      kind: 'file',
+      summary: file,
+      evidence: 'runtime_evidence.changed_files',
+      inspect: `Inspect changed file ${file}.`,
+      tone: 'success'
+    });
+  });
+
+  card.runtimeEvidence.artifactPaths.slice(-8).forEach(path => {
+    const phase = artifactPhase(path, card);
+    push({
+      at: card.runtimeEvidence.lastCheckedAt,
+      from: phaseAgentLabel(phase),
+      to: 'Operator',
+      phase,
+      kind: 'artifact',
+      summary: path,
+      evidence: 'runtime_evidence.artifact_paths',
+      inspect: `Inspect artifact ${path}.`,
+      tone: phase === 'judge' ? 'review' : 'success'
+    });
+  });
+
+  if (!items.length && (card.message || card.status)) {
+    push({
+      from: card.agent || phaseAgentLabel(currentPhase),
+      to: 'Operator',
+      phase: currentPhase,
+      kind: 'status',
+      summary: card.message || card.status,
+      evidence: 'card.status',
+      inspect: operatorInspectNext(card)
+    });
+  }
+
+  return items
+    .map((item, index) => ({ item, index, time: Date.parse(item.at || '') }))
+    .sort((a, b) => {
+      const aHasTime = Number.isFinite(a.time);
+      const bHasTime = Number.isFinite(b.time);
+      if (aHasTime && bHasTime && a.time !== b.time) return a.time - b.time;
+      if (aHasTime !== bHasTime) return aHasTime ? -1 : 1;
+      return a.index - b.index;
+    })
+    .map(({ item }, index) => ({ ...item, id: `${item.id}-${index}` }))
+    .slice(-18);
+}
+
+function communicationParticipants(card: Card): CommunicationParticipant[] {
+  const currentPhase = String(card.phase || card.stage || '').toLowerCase();
+  const completed = new Set(
+    card.phaseHistory
+      .filter(entry => String(entry.status || '').toLowerCase() === 'completed')
+      .map(entry => String(entry.phase || '').toLowerCase())
+  );
+  const observed = new Set([
+    ...card.phaseHistory.map(entry => String(entry.phase || '').toLowerCase()),
+    ...card.conversation.map(message => String(message.stage || '').toLowerCase()),
+    ...card.runtimeEvidence.commandSpans.map(span => String(span.phase || '').toLowerCase())
+  ].filter(Boolean));
+
+  const stageParticipant = (id: string, label: string, detail: string): CommunicationParticipant => {
+    if (completed.has(id)) return { id, label, detail, status: 'completed', tone: 'success' };
+    if (currentPhase === id || (id === 'build' && currentPhase === 'builder')) return { id, label, detail, status: 'acting', tone: 'active' };
+    if (observed.has(id)) return { id, label, detail, status: 'reported', tone: 'review' };
+    return { id, label, detail, status: 'waiting', tone: 'neutral' };
+  };
+
+  return [
+    {
+      id: 'operator',
+      label: 'Operator',
+      detail: card.description ? 'brief accepted' : 'movement selected',
+      status: card.description ? 'accepted' : 'visible',
+      tone: card.description ? 'success' : 'active'
+    },
+    stageParticipant('conductor', 'Conductor', 'score and handoffs'),
+    stageParticipant('build', 'Builder', 'workspace edits'),
+    stageParticipant('judge', 'Judge', 'verdict and gates'),
+    stageParticipant('refiner', 'Refiner', 'bounded retry')
+  ];
+}
+
+function latestPipelineCommunication(card: Card): Pick<CommunicationTimelineItem, 'from' | 'to'> | undefined {
+  const message = card.conversation.at(-1);
+  if (message) return { from: message.from, to: message.to };
+
+  const span = card.runtimeEvidence.commandSpans.at(-1);
+  if (span) return { from: span.agent || phaseAgentLabel(span.phase || card.phase || card.stage), to: 'Workflow Conductor' };
+
+  const phase = card.phaseHistory.at(-1);
+  if (phase) return { from: 'Workflow Conductor', to: phase.agent || phaseAgentLabel(phase.phase || card.phase || card.stage) };
+
+  if (card.description) return { from: 'Operator', to: 'Workflow Conductor' };
+
+  return undefined;
+}
+
+function operatorInspectNext(card: Card) {
+  const status = card.status.toLowerCase();
+  if ((status.includes('fail') || status.includes('block') || status.includes('retry')) && card.verdictPath) {
+    return `Judge verdict: ${card.verdictPath}`;
+  }
+  if (card.runtimeEvidence.commandSpans.length) {
+    const span = card.runtimeEvidence.commandSpans.at(-1);
+    if (span) return `Latest runner/tool span: ${span.label} (${span.status}).`;
+  }
+  if (card.runtimeEvidence.changedFiles.length) {
+    return `Changed files, starting with ${card.runtimeEvidence.changedFiles[0]}.`;
+  }
+  if (card.verdictPath) return `Judge verdict artifact: ${card.verdictPath}`;
+  if (card.scorePath) return `Conductor score artifact: ${card.scorePath}`;
+  if (card.runtimeEvidence.workspacePath || card.workspacePath || card.workspaceTarget || card.repositoryPath) {
+    return `Workspace: ${card.runtimeEvidence.workspacePath || card.workspacePath || card.workspaceTarget || card.repositoryPath}`;
+  }
+  return 'Wait for conversation, phase history, or runtime evidence to arrive.';
+}
+
+function communicationTone(value: string) {
+  const s = value.toLowerCase();
+  if (s.match(/fail|error|stderr|block|reject|missing/)) return 'danger';
+  if (s.match(/retry|refin|attention/)) return 'warning';
+  if (s.match(/judge|review|verdict/)) return 'review';
+  if (s.match(/complete|pass|approved|ready|artifact|file/)) return 'success';
+  if (s.match(/start|running|accepted|handoff|brief|runner|tool|stdout/)) return 'active';
+  return 'neutral';
+}
+
+function artifactPhase(path: string, card: Card) {
+  if (path === card.verdictPath || path === card.runtimeEvidence.verdictPath || path.toLowerCase().includes('verdict')) return 'judge';
+  if (path === card.scorePath || path === card.runtimeEvidence.scorePath || path.toLowerCase().includes('conductor-score')) return 'conductor';
+  return card.phase || card.stage || 'runtime';
+}
+
+function firstLine(value: string) {
+  return value.trim().split(/\r?\n/).find(line => line.trim())?.trim() || value.trim();
 }
 
 function stringField(value: Record<string, unknown>, key: string) {
@@ -2170,7 +2459,7 @@ function OrchestraFloor({
           {idleMusicians.map((musician, index) => <IdleMusicianCard key={musician.id} musician={musician} index={index} />)}
           <FloatingNotes cards={cards} />
         </section>
-        <MovementPipeline cards={cards} selectedCardId={selectedCardId} onSelect={setSelectedCardId} />
+        <MovementObservatory cards={cards} selectedCardId={selectedCardId} onSelect={setSelectedCardId} liveEvents={liveEvents} />
       </div>
       <ScoreConsole
         selectedCard={selectedCard}
@@ -2224,13 +2513,80 @@ function RuntimeLegend() {
   );
 }
 
-function MovementPipeline({ cards, selectedCardId, onSelect }: { cards: Card[]; selectedCardId: string | null; onSelect: (id: string) => void }) {
+type ObservatoryTab = 'transcript' | 'tools' | 'files' | 'score';
+
+function MovementObservatory({
+  cards,
+  selectedCardId,
+  onSelect,
+  liveEvents
+}: {
+  cards: Card[];
+  selectedCardId: string | null;
+  onSelect: (id: string) => void;
+  liveEvents: OrchestrationEvent[];
+}) {
+  const [tab, setTab] = useState<ObservatoryTab>('transcript');
+  const selectedCard = cards.find(card => card.id === selectedCardId) || cards[0];
+
   return (
-    <section className="movementPipeline pixelPanel" aria-label="Plain movement pipeline">
-      <div className="pipelineHeader">
+    <section className="movementObservatory pixelPanel" aria-label="Movement observatory">
+      <div className="observatoryHeader">
         <div>
           <p className="eyebrow">Operations view</p>
-          <h2>Movement pipeline</h2>
+          <h2>Movement observatory</h2>
+        </div>
+        <span>{cards.length} active</span>
+      </div>
+      <div className="observatoryBody">
+        <MovementPipeline cards={cards} selectedCardId={selectedCard?.id || selectedCardId} onSelect={onSelect} />
+        {selectedCard ? (
+          <div className="observatoryDetail">
+            <div className="observatoryTitle">
+              <div>
+                <p className="eyebrow">{selectedCard.movement}</p>
+                <h3>{selectedCard.identifier} · {selectedCard.title}</h3>
+              </div>
+              <StatusPill status={selectedCard.agentProfileStatus || selectedCard.status} />
+            </div>
+            <ObservabilityMetrics card={selectedCard} />
+            <div className="observabilityTabs" role="tablist" aria-label="Movement observability views">
+              {([
+                ['transcript', 'Transcript', Command],
+                ['tools', 'Tools', SlidersHorizontal],
+                ['files', 'Files', FileCode2],
+                ['score', 'Score', Music2]
+              ] as const).map(([id, label, Icon]) => (
+                <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
+                  <Icon size={14} />{label}
+                </button>
+              ))}
+            </div>
+            <div className="observabilityPane">
+              {tab === 'transcript' && <TranscriptObservability card={selectedCard} liveEvents={liveEvents} />}
+              {tab === 'tools' && <ToolSpanObservability card={selectedCard} />}
+              {tab === 'files' && <FileObservability card={selectedCard} />}
+              {tab === 'score' && <MovementSongPanel card={selectedCard} />}
+            </div>
+          </div>
+        ) : (
+          <div className="observatoryDetail empty">
+            <h3>No active movement</h3>
+            <p>Conduct a movement to open the transcript, tool spans, files, and score.</p>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function MovementPipeline({ cards, selectedCardId, onSelect }: { cards: Card[]; selectedCardId: string | null; onSelect: (id: string) => void }) {
+  return (
+    <section className="movementPipeline" aria-label="Plain movement pipeline">
+      <div className="pipelineHeader">
+        <div>
+          <p className="eyebrow">Live movements</p>
+          <h2>Pipeline</h2>
         </div>
         <span>{cards.length} active</span>
       </div>
@@ -2238,6 +2594,7 @@ function MovementPipeline({ cards, selectedCardId, onSelect }: { cards: Card[]; 
         {cards.length ? cards.map(card => {
           const health = evidenceHealth(card);
           const workspace = card.runtimeEvidence.workspacePath || card.workspacePath || card.workspaceTarget || card.repositoryPath || 'managed workspace';
+          const latestCommunication = latestPipelineCommunication(card);
           return (
             <button key={card.id} className={card.id === selectedCardId ? 'pipelineRow selected' : 'pipelineRow'} onClick={() => onSelect(card.id)}>
               <div>
@@ -2246,7 +2603,7 @@ function MovementPipeline({ cards, selectedCardId, onSelect }: { cards: Card[]; 
               </div>
               <div>
                 <b>{phaseAgentLabel(card.phase || card.stage)}</b>
-                <span>{card.status}</span>
+                <span>{latestCommunication ? `${latestCommunication.from} -> ${latestCommunication.to}` : card.status}</span>
               </div>
               <div>
                 <b>{card.agent}</b>
@@ -2267,6 +2624,295 @@ function MovementPipeline({ cards, selectedCardId, onSelect }: { cards: Card[]; 
       </div>
     </section>
   );
+}
+
+function ObservabilityMetrics({ card }: { card: Card }) {
+  const evidence = card.runtimeEvidence;
+  const latestSpan = evidence.commandSpans.at(-1);
+  const workspace = evidence.workspacePath || card.workspacePath || card.workspaceTarget || card.repositoryPath || 'not reported';
+  const assignment = card.activeAssignments?.[0];
+  const metrics = [
+    ['Agent', card.agent],
+    ['Phase', phaseAgentLabel(card.phase || card.stage)],
+    ['Assignment', assignment?.identifier || card.identifier],
+    ['Latest span', latestSpan ? `${latestSpan.label} · ${latestSpan.status}` : card.message || 'awaiting span']
+  ];
+
+  return (
+    <div className="observabilityMetrics">
+      {metrics.map(([label, value]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <b>{value}</b>
+        </div>
+      ))}
+      <div className="wide">
+        <span>Workspace</span>
+        <code>{workspace}</code>
+      </div>
+    </div>
+  );
+}
+
+function TranscriptObservability({ card, liveEvents }: { card: Card; liveEvents: OrchestrationEvent[] }) {
+  const events = movementEventsForCard(card, liveEvents);
+  const communicationItems = communicationTimelineForCard(card);
+
+  return (
+    <div className="transcriptGrid">
+      <section>
+        <div className="subpanelHeader">
+          <h4>Live event stream</h4>
+          <span>{events.length}</span>
+        </div>
+        {events.length ? <EventConversation events={events} /> : <p className="subtle">No live orchestration events are attached to this movement yet.</p>}
+      </section>
+      <section>
+        <div className="subpanelHeader">
+          <h4>Agent messages</h4>
+          <span>{card.conversation.length}</span>
+        </div>
+        <AgentConversation messages={card.conversation} activeAgent={card.agent} />
+      </section>
+      <section className="wide">
+        <div className="subpanelHeader">
+          <h4>Handoffs and evidence trail</h4>
+          <span>{communicationItems.length}</span>
+        </div>
+        <CommunicationTimeline items={communicationItems} compact />
+      </section>
+    </div>
+  );
+}
+
+function ToolSpanObservability({ card }: { card: Card }) {
+  const spans = card.runtimeEvidence.commandSpans;
+
+  return (
+    <div className="toolSpanObservability">
+      <div className="subpanelHeader">
+        <h4>Runner and tool spans</h4>
+        <span>{spans.length}</span>
+      </div>
+      {spans.length ? (
+        <div className="toolSpanTable" role="table" aria-label="Runner and tool spans">
+          <div className="toolSpanRow header" role="row">
+            <span>Time</span>
+            <span>Phase</span>
+            <span>Agent</span>
+            <span>Span</span>
+            <span>Status</span>
+            <span>Message</span>
+          </div>
+          {spans.slice(-24).map((span, index) => (
+            <div className={`toolSpanRow ${statusClass(span.status)}`} role="row" key={`${span.at || index}-${span.phase}-${span.label}`}>
+              <span>{span.at ? formatEventTime(span.at) : '--'}</span>
+              <span>{span.phase || card.phase || 'runtime'}</span>
+              <span>{span.agent || card.agent}</span>
+              <strong>{span.label}</strong>
+              <span>{span.status}</span>
+              <code>{span.message || 'no message'}</code>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="subtle">No runner or tool spans have been captured yet.</p>
+      )}
+    </div>
+  );
+}
+
+function FileObservability({ card }: { card: Card }) {
+  return (
+    <div className="fileObservability">
+      <RuntimeEvidenceSummary card={card} />
+      <RuntimeEvidenceDetails evidence={card.runtimeEvidence} />
+      {(card.scorePath || card.verdictPath) && (
+        <div className="artifactPathGrid">
+          {card.scorePath && <div><b>Conductor score</b><code>{card.scorePath}</code></div>}
+          {card.verdictPath && <div><b>Judge verdict</b><code>{card.verdictPath}</code></div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MovementSongPanel({ card }: { card: Card }) {
+  const [copied, setCopied] = useState(false);
+  const notes = movementSongNotes(card);
+  const scoreText = movementScoreText(card, notes);
+
+  const copyScore = async () => {
+    if (!navigator.clipboard) return;
+
+    try {
+      await navigator.clipboard.writeText(scoreText);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch (err) {
+      console.error('Failed to copy score to clipboard:', err);
+    }
+  };
+
+  return (
+    <div className="movementSongPanel">
+      <div className="songControls">
+        <div>
+          <p className="eyebrow">Generated cue</p>
+          <h4>{card.identifier} runtime score</h4>
+        </div>
+        <button className="button secondary compact" onClick={() => playMovementCue(card)}><PlayCircle size={14} />Play cue</button>
+        <button className="button secondary compact" onClick={copyScore}><Clipboard size={14} />{copied ? 'Copied' : 'Copy score'}</button>
+      </div>
+      <div className="playableStaff" aria-label="Runtime-generated score">
+        <div className="staffLines"><i /><i /><i /><i /><i /></div>
+        {notes.map(note => (
+          <span
+            className={`staffNote ${note.tone}`}
+            key={note.id}
+            style={{ left: `${note.x}%`, top: `${note.y}%` }}
+            title={`${note.phase}: ${note.label}`}
+          />
+        ))}
+      </div>
+      <pre className="scoreText">{scoreText}</pre>
+    </div>
+  );
+}
+
+type MovementSongNote = {
+  id: string;
+  label: string;
+  phase: string;
+  tone: string;
+  x: number;
+  y: number;
+  midi: number;
+  duration: number;
+};
+
+function movementSongNotes(card: Card): MovementSongNote[] {
+  const spanNotes = card.runtimeEvidence.commandSpans.map((span, index) => ({
+    id: `span-${index}-${span.label}`,
+    label: span.label,
+    phase: span.phase || card.phase || 'runtime',
+    status: span.status
+  }));
+  const fileNotes = card.runtimeEvidence.changedFiles.map((file, index) => ({
+    id: `file-${index}-${file}`,
+    label: file,
+    phase: 'files',
+    status: 'changed'
+  }));
+  const artifactNotes = card.runtimeEvidence.artifactPaths.map((artifact, index) => ({
+    id: `artifact-${index}-${artifact}`,
+    label: artifact,
+    phase: artifact.toLowerCase().includes('verdict') ? 'judge' : 'artifact',
+    status: 'captured'
+  }));
+  const phaseNotes = card.phaseHistory.map((entry, index) => ({
+    id: `phase-${index}-${entry.phase}-${entry.status}`,
+    label: `${entry.phase || 'phase'} ${entry.status || ''}`.trim(),
+    phase: entry.phase || card.phase || 'phase',
+    status: entry.status || 'phase'
+  }));
+  const source = [...phaseNotes, ...spanNotes, ...fileNotes, ...artifactNotes];
+  const fallback = [{ id: `active-${card.backendId}`, label: card.title, phase: card.phase || card.stage || 'movement', status: card.status }];
+  const notes = (source.length ? source : fallback).slice(-32);
+  const scale = [0, 2, 4, 7, 9, 12, 14, 16];
+
+  return notes.map((note, index) => {
+    const seed = hashString(`${card.backendId}-${note.id}-${index}`);
+    const degree = scale[seed % scale.length];
+    const octave = 48 + (index % 3) * 7;
+    const tone = statusClass(note.status);
+    return {
+      id: note.id,
+      label: note.label,
+      phase: note.phase,
+      tone,
+      x: 5 + (index / Math.max(1, notes.length - 1)) * 90,
+      y: 18 + (seed % 58),
+      midi: octave + degree,
+      duration: tone === 'danger' ? 0.42 : tone === 'warning' ? 0.32 : 0.24
+    };
+  });
+}
+
+function movementScoreText(card: Card, notes: MovementSongNote[]) {
+  const workspace = card.runtimeEvidence.workspacePath || card.workspacePath || card.workspaceTarget || card.repositoryPath || 'not reported';
+  const spans = card.runtimeEvidence.commandSpans.slice(-10).map(span => `- ${span.phase || 'runtime'} / ${span.agent || card.agent}: ${span.label} (${span.status})${span.message ? ` - ${span.message}` : ''}`);
+  const files = card.runtimeEvidence.changedFiles.slice(-12).map(file => `- ${file}`);
+  const artifacts = card.runtimeEvidence.artifactPaths.slice(-8).map(path => `- ${path}`);
+  const staff = notes.map(note => `- ${note.phase}: midi ${note.midi}, ${note.label}`).join('\n');
+
+  return [
+    `Movement: ${card.identifier} - ${card.title}`,
+    `Agent: ${card.agent}${card.agentRole ? ` (${card.agentRole})` : ''}`,
+    `Status: ${card.agentProfileStatus || card.status}`,
+    `Workspace: ${workspace}`,
+    '',
+    'Runtime spans:',
+    spans.length ? spans.join('\n') : '- none captured yet',
+    '',
+    'Changed files:',
+    files.length ? files.join('\n') : '- none captured yet',
+    '',
+    'Artifacts:',
+    artifacts.length ? artifacts.join('\n') : '- none captured yet',
+    '',
+    'Playable cue:',
+    staff
+  ].join('\n');
+}
+
+let movementCueContext: AudioContext | null = null;
+let movementCueCloseTimer: number | null = null;
+
+function stopMovementCuePlayback() {
+  if (movementCueCloseTimer !== null) {
+    window.clearTimeout(movementCueCloseTimer);
+    movementCueCloseTimer = null;
+  }
+
+  if (movementCueContext) {
+    const ctx = movementCueContext;
+    movementCueContext = null;
+    void ctx.close().catch(() => undefined);
+  }
+}
+
+function playMovementCue(card: Card) {
+  const AudioCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioCtor) return;
+
+  stopMovementCuePlayback();
+
+  const ctx = new AudioCtor();
+  movementCueContext = ctx;
+  const master = ctx.createGain();
+  master.gain.value = 0.22;
+  master.connect(ctx.destination);
+  const notes = movementSongNotes(card).slice(0, 28);
+  const start = ctx.currentTime + 0.08;
+  notes.forEach((note, index) => {
+    playSynthNote(ctx, master, {
+      time: start + index * 0.13,
+      freq: midiToFreq(note.midi),
+      duration: note.duration,
+      gain: note.tone === 'danger' ? 0.065 : 0.052,
+      type: note.tone === 'danger' ? 'sawtooth' : note.tone === 'review' ? 'triangle' : 'sine',
+      filterHz: note.tone === 'danger' ? 900 : 3600,
+      pan: notes.length <= 1 ? 0 : -0.7 + (index / (notes.length - 1)) * 1.4
+    });
+  });
+  movementCueCloseTimer = window.setTimeout(() => {
+    if (movementCueContext === ctx) {
+      movementCueContext = null;
+      movementCueCloseTimer = null;
+      void ctx.close().catch(() => undefined);
+    }
+  }, Math.max(900, notes.length * 150 + 800));
 }
 
 function CueLines({ cards }: { cards: Card[] }) {
@@ -2343,6 +2989,8 @@ function PerformerCard({
   const instrument = instrumentFor(card.agent, card.status, card.instrumentName);
   const status = statusClass(card.status);
   const chair = (hashString(card.backendId) % 4) + 1;
+  const evidence = card.runtimeEvidence;
+  const phaseLabel = phaseAgentLabel(card.phase || card.stage);
 
   return (
     <article
@@ -2358,7 +3006,8 @@ function PerformerCard({
         <span className="ticket">{card.identifier}</span>
         <b>{card.title}</b>
         <small>{card.instrumentName} · {card.section} · chair {chair}</small>
-        <small>{card.agent}{card.agentRole ? ` · ${card.agentRole}` : ''} · {card.turns} turns · {card.tokens.toLocaleString()} notes</small>
+        <small>{card.agent}{card.agentRole ? ` · ${card.agentRole}` : ''} · {phaseLabel} · {card.agentProfileStatus || card.status}</small>
+        <small>{evidence.changedFiles.length} files · {evidence.commandSpans.length} spans · {evidence.artifactPaths.length} artifacts</small>
         <div className="tokenBar" aria-label="Token usage"><i style={{ width: `${card.intensity}%` }} /></div>
         <div className="cardActions" onClick={event => event.stopPropagation()}>
           <button className="miniButton" onClick={onDebug} disabled={busy}><Bug size={12} />Debug</button>
@@ -2373,15 +3022,21 @@ function PerformerCard({
 
 function IdleMusicianCard({ musician, index }: { musician: IdleMusician; index: number }) {
   const seat = idleSeatFor(musician.section, musician.stagePosition, index);
+  const assignment = musician.activeAssignments[0];
+  const assignmentLine = assignment
+    ? `${phaseAgentLabel(assignment.phase)} · ${assignment.identifier || 'assigned movement'}`
+    : musician.status === 'disabled'
+      ? 'disabled · not available'
+      : `${musician.role} · waiting for assignment`;
   return (
-    <article className={`performer idlePerformer ${musician.status === 'disabled' ? 'disabled' : ''}`} style={{ left: `${seat.x}%`, top: `${seat.y}%` }}>
+    <article className={`performer idlePerformer ${musician.status === 'disabled' ? 'disabled' : ''} ${musician.status === 'running' || musician.status === 'retrying' ? 'assigned' : ''}`} style={{ left: `${seat.x}%`, top: `${seat.y}%` }}>
       <div className="performerShadow" />
       <div className={`pixelPerson musician idle section-${sectionClass(musician.section)}`}><span className="head" /><span className="body" /><span className="legs" /><span className="instrument">{instrumentFor(musician.agent, musician.status, musician.instrumentName)}</span></div>
       <div className="taskSlip idleSlip">
         <span className="ticket">{musician.status.toUpperCase()}</span>
         <b>{musician.agent}</b>
         <small>{musician.instrumentName} · {musician.section}</small>
-        <small>{musician.role} · waiting for assignment</small>
+        <small>{assignmentLine}</small>
       </div>
     </article>
   );
@@ -2524,6 +3179,7 @@ function MovementPanel({ card }: { card: Card }) {
   return (
     <>
       <RuntimeEvidenceSummary card={card} />
+      <CommunicationOverview card={card} />
       <div className="scoreSheet">
         <div className="staffLines"><i /><i /><i /><i /><i /></div>
         <div className="scoreNotes" style={{ '--movement-intensity': `${card.intensity}%` } as React.CSSProperties}>♪ ♫ ♩ ♬</div>
@@ -2549,10 +3205,73 @@ function MovementPanel({ card }: { card: Card }) {
           <code>{card.verdictPath}</code>
         </div>
       )}
-      <PhaseTrace entries={card.phaseHistory} />
-      <AgentConversation messages={card.conversation} activeAgent={card.agent} />
       <p>{card.message || card.retry || 'Waiting for the next orchestration cue.'}</p>
     </>
+  );
+}
+
+function CommunicationOverview({ card }: { card: Card }) {
+  const participants = communicationParticipants(card);
+  const items = communicationTimelineForCard(card);
+  const next = operatorInspectNext(card);
+
+  return (
+    <section className="communicationOverview" aria-label="Human and agent communication record">
+      <div className="communicationHeader">
+        <div>
+          <p className="eyebrow">Runtime communication</p>
+          <h3>Handoffs and proof trail</h3>
+        </div>
+        <span>{items.length} records</span>
+      </div>
+      <div className="participantStrip" aria-label="Movement participants">
+        {participants.map(participant => (
+          <div key={participant.id} className={`participantChip ${participant.tone}`}>
+            <b>{participant.label}</b>
+            <span>{participant.status}</span>
+            <small>{participant.detail}</small>
+          </div>
+        ))}
+      </div>
+      <div className="operatorNext">
+        <b>Operator should inspect next</b>
+        <span>{next}</span>
+      </div>
+      {card.description && (
+        <details className="acceptedBrief">
+          <summary>Accepted movement brief</summary>
+          <p>{card.description}</p>
+        </details>
+      )}
+      <CommunicationTimeline items={items} />
+    </section>
+  );
+}
+
+function CommunicationTimeline({ items, compact = false }: { items: CommunicationTimelineItem[]; compact?: boolean }) {
+  if (!items.length) return <p className="subtle">No card communication, phase history, or runtime evidence has been reported yet.</p>;
+
+  return (
+    <div className={compact ? 'communicationTimeline compact' : 'communicationTimeline'} aria-label="Runtime-backed communication timeline">
+      {items.slice(-12).map(item => (
+        <article key={item.id} className={`communicationItem ${item.tone}`}>
+          <div className="communicationItemHeader">
+            <span>{phaseAgentLabel(item.phase)}</span>
+            <small>{item.at ? formatEventTime(item.at) : item.kind}</small>
+          </div>
+          <div className="communicationRoute">
+            <b>{item.from}</b>
+            <MoveRight size={13} />
+            <b>{item.to}</b>
+          </div>
+          <p>{item.summary}</p>
+          <div className="communicationEvidence">
+            <code>{item.evidence}</code>
+            <span>{item.inspect}</span>
+          </div>
+        </article>
+      ))}
+    </div>
   );
 }
 
@@ -2661,13 +3380,18 @@ function AgentConversation({ messages, activeAgent }: { messages: AgentConversat
   );
 }
 
-function MovementEvents({ card, debugPayload, liveEvents }: { card: Card; debugPayload: string | null; liveEvents: OrchestrationEvent[] }) {
-  const movementEvents = liveEvents
+function movementEventsForCard(card: Card, liveEvents: OrchestrationEvent[]) {
+  return liveEvents
     .filter(event => {
       const ids = [event.issue_id, event.issue_identifier].filter(Boolean);
       return ids.includes(card.backendId) || ids.includes(card.identifier);
     })
-    .slice(-24);
+    .slice(-32);
+}
+
+function MovementEvents({ card, debugPayload, liveEvents }: { card: Card; debugPayload: string | null; liveEvents: OrchestrationEvent[] }) {
+  const movementEvents = movementEventsForCard(card, liveEvents).slice(-24);
+  const communicationItems = communicationTimelineForCard(card);
   const events = [
     ['Movement', card.movement],
     ['Status', card.status],
@@ -2685,6 +3409,10 @@ function MovementEvents({ card, debugPayload, liveEvents }: { card: Card; debugP
       <div className="liveMovementLedger">
         <h3>Agent conversation</h3>
         {movementEvents.length ? <EventConversation events={movementEvents} /> : <p className="subtle">No live events for this movement yet.</p>}
+      </div>
+      <div className="liveMovementLedger">
+        <h3>Card communication record</h3>
+        <CommunicationTimeline items={communicationItems} compact />
       </div>
       <RuntimeEvidenceDetails evidence={card.runtimeEvidence} />
       {debugPayload && <pre className="debugPanel inline">{debugPayload}</pre>}

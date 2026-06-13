@@ -49,10 +49,43 @@ defmodule Symphony.Http.ApiTest do
     assert card.refiner_max_attempts == 2
     assert card.operator_status == "refining"
     assert card.agent_profile_id == "workflow-refiner"
+    assert card.agent_profile_status == "running"
+    assert card.agent_profile.status == "running"
+    assert card.agent_profile.current_assignments == ["TER-REFINER"]
+
+    assert [%{identifier: "TER-REFINER", phase: "refiner", status: "running"}] =
+             card.agent_profile.active_assignments
+
     assert card.verdict == "needs_refinement"
     assert card.verdict_path == "/tmp/judge-verdict.json"
     assert card.runtime_evidence.changed_files == ["lib/example.ex"]
     assert [%{label: "runner turn", status: "completed"}] = card.runtime_evidence.command_spans
     assert card.runtime_evidence.verdict_path == "/tmp/judge-verdict.json"
+  end
+
+  test "completed run cards clear active profile assignments" do
+    card =
+      Api.run_card(%Run{
+        issue_id: "issue-completed",
+        issue_identifier: "TER-DONE",
+        phase: "build",
+        status: :completed,
+        agent_profile: %{
+          id: "workflow-builder",
+          name: "Codex Builder",
+          role: "Builder",
+          section: "Strings",
+          instrument_name: "Violin",
+          status: "running",
+          current_assignments: ["TER-OLD"],
+          active_assignments: [%{identifier: "TER-OLD", status: "running"}]
+        }
+      })
+
+    assert card.status == :completed
+    assert card.agent_profile_status == "completed"
+    assert card.agent_profile.status == "completed"
+    assert card.agent_profile.current_assignments == []
+    assert card.agent_profile.active_assignments == []
   end
 end
